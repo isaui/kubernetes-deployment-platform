@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pendeploy-handal
+  namespace: default
+  labels:
+    app: pendeploy-handal
+spec:
+  type: ExternalName
+  externalName: 127.0.0.1  # localhost pada master node
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
