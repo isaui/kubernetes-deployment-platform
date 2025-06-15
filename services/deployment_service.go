@@ -93,8 +93,9 @@ func (s *DeploymentService) BuildImage(repoURL, commitID, branch string) (*model
 		repo = "repo"
 	}
 	
-	// Format: org-user::repo::branch:commit
-	imageName := fmt.Sprintf("%s::%s::%s", orgUser, repo, branch)
+	// Format: org-user-repo-branch:commit
+	// Using dashes as separators instead of double colons, which are invalid in image names
+	imageName := fmt.Sprintf("%s-%s-%s", orgUser, repo, branch)
 	imageTag := commitID
 	imageFullName := fmt.Sprintf("%s:%s", imageName, imageTag)
 	
@@ -108,8 +109,8 @@ func (s *DeploymentService) BuildImage(repoURL, commitID, branch string) (*model
 	}
 	
 	// Generate a container ID berdasarkan format name
-	// Format: org::repo::branch:commit
-	containerID := fmt.Sprintf("%s::%s::%s:%s", orgUser, repo, branch, commitID)
+	// Format: org-repo-branch-commit
+	containerID := fmt.Sprintf("%s-%s-%s-%s", orgUser, repo, branch, commitID)
 	
 	// Kembalikan hasil build
 	return &models.BuildImageResult{
