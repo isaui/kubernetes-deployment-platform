@@ -6,29 +6,35 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/isabu/pendeploy-handal/config"
-	"github.com/isabu/pendeploy-handal/routes"
+	"github.com/pendeploy-simple/handlers"
 )
 
 func main() {
 	// Set Gin mode
-    gin.SetMode(gin.ReleaseMode)
+	gin.SetMode(gin.ReleaseMode)
+	
 	// Initialize router
 	router := gin.Default()
 
 	// CORS configuration
 	router.Use(cors.New(cors.Config{
 		AllowAllOrigins:  true,
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		AllowCredentials: true,
 	}))
 
-	// Load environment variables
-	config.LoadEnv()
+	// Health check endpoint
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "ok",
+			"service": "pendeploy-simple",
+			"version": "1.0.0",
+		})
+	})
 
-	// Setup routes
-	routes.SetupRoutes(router)
+	// Main deployment endpoint
+	router.POST("/create-deployment", handlers.CreateDeployment)
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -37,7 +43,7 @@ func main() {
 	}
 
 	// Start server
-	log.Printf("Server starting on port %s", port)
+	log.Printf("🚀 PenDeploy Simple starting on port %s", port)
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
