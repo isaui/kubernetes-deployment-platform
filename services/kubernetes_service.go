@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	
 	"github.com/isabu/pendeploy-handal/models"
 )
@@ -76,21 +77,72 @@ func (s *KubernetesService) ApplyKubernetesManifests(repoDir string, buildResult
 		return "", fmt.Errorf("kubernetes directory not found in repository")
 	}
 	
-	// Set environment variables untuk kubectl
-	cmd := exec.Command(s.KubectlPath, "apply", "-f", kubeDir)
-	cmd.Env = append(os.Environ(), 
-		fmt.Sprintf("APP_IMAGE=%s:%s", buildResult.ImageName, buildResult.ImageTag),
-		fmt.Sprintf("APP_NAME=%s", buildResult.ImageName),
-		fmt.Sprintf("APP_CONTAINER_ID=%s", buildResult.ContainerID),
-	)
-	
-	// Jalankan kubectl apply
-	output, err := cmd.CombinedOutput()
+	// Create a temporary directory for processed manifests
+	tempDir, err := os.MkdirTemp("", "k8s-manifests")
 	if err != nil {
-		return string(output), fmt.Errorf("kubectl apply failed: %w\n%s", err, string(output))
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Clean up at the end
+
+	// Process all YAML files to substitute variables
+	files, err := filepath.Glob(filepath.Join(kubeDir, "*.yaml"))
+	if err != nil {
+		return "", fmt.Errorf("failed to glob yaml files: %w", err)
 	}
 	
-	return string(output), nil
+	// Add support for yml extension too
+	ymlFiles, err := filepath.Glob(filepath.Join(kubeDir, "*.yml"))
+	if err == nil {
+		files = append(files, ymlFiles...)
+	}
+
+	if len(files) == 0 {
+		return "", fmt.Errorf("no YAML files found in kubernetes directory")
+	}
+	
+	// Create a map for variable substitution
+	vars := map[string]string{
+		"APP_IMAGE": fmt.Sprintf("%s:%s", buildResult.ImageName, buildResult.ImageTag),
+		"APP_NAME": buildResult.ImageName,
+		"APP_CONTAINER_ID": buildResult.ContainerID,
+	}
+
+	// Process each file
+	for _, file := range files {
+		// Read original content
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("failed to read file %s: %w", file, err)
+		}
+		
+		// Replace variables
+		processed := string(content)
+		for k, v := range vars {
+			processed = strings.Replace(processed, "${" + k + "}", v, -1)
+		}
+		
+		// Write to temp file
+		tempFile := filepath.Join(tempDir, filepath.Base(file))
+		if err := os.WriteFile(tempFile, []byte(processed), 0644); err != nil {
+			return "", fmt.Errorf("failed to write temp file %s: %w", tempFile, err)
+		}
+	}
+
+	// Apply the processed files
+	cmd := exec.Command(s.KubectlPath, "apply", "-f", tempDir)
+
+	// Print information about what we're doing
+	applyMsg := fmt.Sprintf("Applying Kubernetes manifests from %s with APP_IMAGE=%s", kubeDir, vars["APP_IMAGE"])
+	output := applyMsg + "\n"
+
+	// Run kubectl apply
+	cmdOutput, err := cmd.CombinedOutput()
+	output += string(cmdOutput)
+	if err != nil {
+		return output, fmt.Errorf("kubectl apply failed: %w\n%s", err, string(cmdOutput))
+	}
+	
+	return output, nil
 }
 
 // RunDeploymentScript menjalankan script deployment yang telah dibuat
