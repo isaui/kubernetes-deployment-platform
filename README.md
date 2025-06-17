@@ -20,6 +20,7 @@ A simple deployment service that clones GitHub repositories, builds Docker image
 - `git` command
 - Running Kubernetes cluster
 - Container registry (localhost:5000)
+- API Key (set as environment variable)
 
 ### Installation
 
@@ -31,11 +32,25 @@ cd pendeploy-simple
 # Install dependencies
 go mod download
 
+# Set API key (required for security)
+export PENDEPLOY_API_KEY="your-secret-api-key-here"
+
 # Run the service
 go run main.go
 ```
 
 ## 📝 API Usage
+
+### Authentication
+
+All endpoints except for the health check (`/`) require authentication using an API key.
+
+**Header Required:**
+```
+X-API-Key: your-secret-api-key-here
+```
+
+The API key must match the value set in the `PENDEPLOY_API_KEY` environment variable.
 
 ### Endpoint: `POST /create-deployment`
 
@@ -159,6 +174,7 @@ spec:
 ```bash
 curl -X POST http://localhost:8080/create-deployment \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-api-key-here" \
   -d '{
     "githubUrl": "https://github.com/myorg/my-node-app",
     "env": {
@@ -194,8 +210,9 @@ go run main.go
 Environment variables for the service:
 
 ```bash
-export PORT=8080                    # Service port (default: 8080)
-export GIN_MODE=release             # Gin mode (default: release)
+export PENDEPLOY_API_KEY="your-secret-api-key"  # Required: API key for authentication
+export PORT=8080                              # Service port (default: 8080)
+export GIN_MODE=release                       # Gin mode (default: release)
 ```
 
 ## 🐛 Troubleshooting
