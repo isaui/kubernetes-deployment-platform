@@ -1,0 +1,124 @@
+package repositories
+
+import (
+	"time"
+
+	"github.com/pendeploy-simple/database"
+	"github.com/pendeploy-simple/models"
+	"gorm.io/gorm"
+)
+
+// DeploymentRepository handles database operations for deployments
+type DeploymentRepository struct{}
+
+// NewDeploymentRepository creates a new deployment repository instance
+func NewDeploymentRepository() *DeploymentRepository {
+	return &DeploymentRepository{}
+}
+
+// FindAll retrieves all deployments
+func (r *DeploymentRepository) FindAll() ([]models.Deployment, error) {
+	var deployments []models.Deployment
+	result := database.DB.Find(&deployments)
+	return deployments, result.Error
+}
+
+// FindByID retrieves a deployment by its ID
+func (r *DeploymentRepository) FindByID(id string) (models.Deployment, error) {
+	var deployment models.Deployment
+	result := database.DB.First(&deployment, "id = ?", id)
+	return deployment, result.Error
+}
+
+// FindByServiceID retrieves all deployments for a service
+func (r *DeploymentRepository) FindByServiceID(serviceID string) ([]models.Deployment, error) {
+	var deployments []models.Deployment
+	result := database.DB.Where("service_id = ?", serviceID).Order("created_at DESC").Find(&deployments)
+	return deployments, result.Error
+}
+
+// Create inserts a new deployment into the database
+func (r *DeploymentRepository) Create(deployment models.Deployment) (models.Deployment, error) {
+	result := database.DB.Create(&deployment)
+	return deployment, result.Error
+}
+
+// UpdateStatus updates the status of a deployment
+func (r *DeploymentRepository) UpdateStatus(id string, status models.DeploymentStatus) error {
+	var updates = map[string]interface{}{
+		"status": status,
+	}
+	
+	// If status is success, set the deployed_at timestamp
+	if status == models.DeploymentStatusSuccess {
+		now := time.Now()
+		updates["deployed_at"] = &now
+	}
+	
+	result := database.DB.Model(&models.Deployment{}).
+		Where("id = ?", id).
+		Updates(updates)
+		
+	return result.Error
+}
+
+// UpdateBuildLogs updates the build logs for a deployment
+func (r *DeploymentRepository) UpdateBuildLogs(id string, logs string) error {
+	result := database.DB.Model(&models.Deployment{}).
+		Where("id = ?", id).
+		Update("build_logs", logs)
+	return result.Error
+}
+
+// GetLatestSuccessfulDeployment retrieves the most recent successful deployment for a service
+func (r *DeploymentRepository) GetLatestSuccessfulDeployment(serviceID string) (models.Deployment, error) {
+	var deployment models.Deployment
+	result := database.DB.Where("service_id = ? AND status = ?", 
+		serviceID, models.DeploymentStatusSuccess).
+		Order("deployed_at DESC").First(&deployment)
+	return deployment, result.Error
+}
+
+// CountByServiceID counts the number of deployments for a service
+func (r *DeploymentRepository) CountByServiceID(serviceID string) (int64, error) {
+	var count int64
+	result := database.DB.Model(&models.Deployment{}).
+		Where("service_id = ?", serviceID).Count(&count)
+	return count, result.Error
+}
+
+// GetSuccessRate calculates the deployment success rate for a service
+func (r *DeploymentRepository) GetSuccessRate(serviceID string) (float64, error) {
+	type Result struct {
+		Total       int64
+		Successful  int64
+	}
+	
+	var result Result
+	
+	err := database.DB.Raw(`
+		SELECT 
+			COUNT(*) as total,
+			SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as successful
+		FROM 
+			deployments
+		WHERE 
+			service_id = ?
+			AND deleted_at IS NULL
+	`, models.DeploymentStatusSuccess, serviceID).Scan(&result).Error
+	
+	if err != nil {
+		return 0, err
+	}
+	
+	if result.Total == 0 {
+		return 0, nil
+	}
+	
+	return float64(result.Successful) / float64(result.Total), nil
+}
+
+// DB returns the database instance
+func (r *DeploymentRepository) DB() *gorm.DB {
+	return database.DB
+}
