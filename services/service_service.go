@@ -93,6 +93,38 @@ func (s *ServiceService) CreateService(service models.Service, userID string, is
 		return service, errors.New("environment does not belong to the specified project")
 	}
 	
+	// Validate service fields based on type
+	if service.Type == models.ServiceTypeGit {
+		// Git-based service requires RepoURL
+		if service.RepoURL == "" {
+			return service, errors.New("repository URL is required for git services")
+		}
+		
+		// Set default branch if empty
+		if service.Branch == "" {
+			service.Branch = "main"
+		}
+	} else if service.Type == models.ServiceTypeManaged {
+		// Managed service requires ManagedType
+		if service.ManagedType == "" {
+			return service, errors.New("managed type is required for managed services")
+		}
+		
+		// Set default version if empty
+		if service.Version == "" {
+			service.Version = "latest"
+		}
+		
+		// Set default storage size for database-like managed services
+		if service.StorageSize == "" && (service.ManagedType == "postgresql" || 
+			service.ManagedType == "mysql" || service.ManagedType == "mongodb" || 
+			service.ManagedType == "redis" || service.ManagedType == "minio") {
+			service.StorageSize = "1Gi"
+		}
+	} else {
+		return service, errors.New("invalid service type")
+	}
+
 	// Set initial status
 	service.Status = "inactive"
 	
@@ -135,6 +167,37 @@ func (s *ServiceService) UpdateService(service models.Service, userID string, is
 		if env.ProjectID != service.ProjectID {
 			return service, errors.New("environment does not belong to the specified project")
 		}
+	}
+	
+	// Validate service fields based on type
+	if service.Type == models.ServiceTypeGit {
+		// Git-based service requires RepoURL
+		if service.RepoURL == "" {
+			return service, errors.New("repository URL is required for git services")
+		}
+		
+		// Set default branch if empty
+		if service.Branch == "" {
+			service.Branch = "main"
+		}
+	} else if service.Type == models.ServiceTypeManaged {
+		// Managed service requires ManagedType
+		if service.ManagedType == "" {
+			return service, errors.New("managed type is required for managed services")
+		}
+		
+		// Set default version if empty
+		if service.Version == "" {
+			service.Version = "latest"
+		}
+		
+		// Cannot change ManagedType for existing managed services
+		if existingService.Type == models.ServiceTypeManaged && 
+		   existingService.ManagedType != service.ManagedType {
+			return service, errors.New("cannot change managed service type for an existing service")
+		}
+	} else {
+		return service, errors.New("invalid service type")
 	}
 	
 	// Preserve fields that shouldn't be changed

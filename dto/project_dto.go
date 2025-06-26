@@ -68,14 +68,20 @@ type ProjectEnvironmentItem struct {
 type ProjectServiceStatsItem struct {
 	ID            string  `json:"id"`
 	Name          string  `json:"name"`
-	Type          string  `json:"type"`
+	Type          string  `json:"type"` // "git" or "managed"
 	Status        string  `json:"status"`
 	EnvironmentID string  `json:"environmentId"`
 	EnvironmentName string `json:"environmentName"`
-	Deployments   int64   `json:"deployments"`
-	SuccessRate   float64 `json:"successRate"`
-	Replicas      int     `json:"replicas"`
-	IsAutoScaling bool    `json:"isAutoScaling"`
+	
+	// Git-specific fields
+	Deployments   int64   `json:"deployments,omitempty"` // Only applicable for git services
+	SuccessRate   float64 `json:"successRate,omitempty"` // Only applicable for git services
+	Replicas      int     `json:"replicas,omitempty"`
+	IsAutoScaling bool    `json:"isAutoScaling,omitempty"`
+	
+	// Managed service fields
+	ManagedType   string  `json:"managedType,omitempty"` // Only applicable for managed services
+	Version       string  `json:"version,omitempty"`      // Only applicable for managed services
 }
 
 // CreateProjectRequest represents the request payload for creating a new project

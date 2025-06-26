@@ -121,15 +121,25 @@ func (c *ServiceController) GetService(ctx *gin.Context) {
 
 // ServiceRequest represents a service creation/update request
 type ServiceRequest struct {
+	// Common fields for all service types
 	Name          string             `json:"name" binding:"required"`
-	Type          models.ServiceType `json:"type" binding:"required"`
+	Type          models.ServiceType `json:"type" binding:"required"` // "git" or "managed"
 	ProjectID     string             `json:"projectId" binding:"required"`
 	EnvironmentID string             `json:"environmentId" binding:"required"`
-	RepoURL       string             `json:"repoUrl" binding:"required"`
+	
+	// Git-specific fields (required only when Type is "git")
+	RepoURL       string             `json:"repoUrl"`
 	Branch        string             `json:"branch"`
 	Port          int                `json:"port"`
 	BuildCommand  string             `json:"buildCommand"`
 	StartCommand  string             `json:"startCommand"`
+	
+	// Managed service specific fields (required only when Type is "managed")
+	ManagedType   string             `json:"managedType"` // postgresql, redis, minio, etc.
+	Version       string             `json:"version"`     // 14, 6.0, latest, etc.
+	StorageSize   string             `json:"storageSize"` // 1Gi, 10Gi, etc.
+	
+	// Common configuration fields
 	EnvVars       models.EnvVars     `json:"envVars"`
 	CPULimit      string             `json:"cpuLimit"`
 	MemoryLimit   string             `json:"memoryLimit"`
@@ -158,17 +168,50 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 		return
 	}
 
+	// Validate fields based on service type
+	if req.Type == models.ServiceTypeGit {
+		// Git services require RepoURL
+		if req.RepoURL == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Repository URL is required for git services",
+			})
+			return
+		}
+	} else if req.Type == models.ServiceTypeManaged {
+		// Managed services require ManagedType
+		if req.ManagedType == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "ManagedType is required for managed services",
+			})
+			return
+		}
+	} else {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid service type",
+		})
+		return
+	}
+
 	// Create service object
 	service := models.Service{
 		Name:           req.Name,
 		Type:           req.Type,
 		ProjectID:      req.ProjectID,
 		EnvironmentID:  req.EnvironmentID,
+		
+		// Git-specific fields
 		RepoURL:        req.RepoURL,
 		Branch:         req.Branch,
 		Port:           req.Port,
 		BuildCommand:   req.BuildCommand,
 		StartCommand:   req.StartCommand,
+		
+		// Managed service fields
+		ManagedType:    req.ManagedType,
+		Version:        req.Version,
+		StorageSize:    req.StorageSize,
+		
+		// Common configuration fields
 		EnvVars:        req.EnvVars,
 		CPULimit:       req.CPULimit,
 		MemoryLimit:    req.MemoryLimit,
@@ -214,6 +257,30 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		return
 	}
 
+	// Validate fields based on service type
+	if req.Type == models.ServiceTypeGit {
+		// Git services require RepoURL
+		if req.RepoURL == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Repository URL is required for git services",
+			})
+			return
+		}
+	} else if req.Type == models.ServiceTypeManaged {
+		// Managed services require ManagedType
+		if req.ManagedType == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "ManagedType is required for managed services",
+			})
+			return
+		}
+	} else {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid service type",
+		})
+		return
+	}
+
 	// Create service object
 	service := models.Service{
 		ID:             serviceID,
@@ -221,11 +288,20 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		Type:           req.Type,
 		ProjectID:      req.ProjectID,
 		EnvironmentID:  req.EnvironmentID,
+		
+		// Git-specific fields
 		RepoURL:        req.RepoURL,
 		Branch:         req.Branch,
 		Port:           req.Port,
 		BuildCommand:   req.BuildCommand,
 		StartCommand:   req.StartCommand,
+		
+		// Managed service fields
+		ManagedType:    req.ManagedType,
+		Version:        req.Version,
+		StorageSize:    req.StorageSize,
+		
+		// Common configuration fields
 		EnvVars:        req.EnvVars,
 		CPULimit:       req.CPULimit,
 		MemoryLimit:    req.MemoryLimit,

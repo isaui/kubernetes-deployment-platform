@@ -41,6 +41,10 @@ func RegisterRoutes(router *gin.RouterGroup) {
 	// Service endpoints - protected by AuthMiddleware
 	serviceController := NewServiceController()
 	serviceController.RegisterRoutes(authRouter)
+	
+	// Registry endpoints - protected by AuthMiddleware
+	registryController := NewRegistryController()
+	registryController.RegisterRoutes(authRouter)
 
 	// Admin endpoints - protected by AdminMiddleware
 	statsGroup := router.Group("/admin")

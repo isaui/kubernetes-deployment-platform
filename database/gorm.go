@@ -56,6 +56,7 @@ func Initialize() {
 
 	// Auto migrate models
 	err = DB.AutoMigrate(
+		&models.Registry{},
 		&models.User{},
 		&models.Project{},
 		&models.Environment{},

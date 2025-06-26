@@ -34,21 +34,26 @@ func (e *EnvVars) Scan(value interface{}) error {
 type ServiceType string
 
 const (
-	ServiceTypeWeb      ServiceType = "web"
-	ServiceTypeWorker   ServiceType = "worker"  
-	ServiceTypeDatabase ServiceType = "database"
+	ServiceTypeGit     ServiceType = "git"      // Git-based applications (web, workers, etc.)
+	ServiceTypeManaged ServiceType = "managed"  // Managed services (databases, cache, storage, etc.)
 )
 
 // Service represents a deployable service
 type Service struct {
+	// Common fields for all service types
 	ID            string         `json:"id" gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
 	Name          string         `json:"name" gorm:"not null"`
-	Type          ServiceType    `json:"type" gorm:"type:varchar(20);default:'web'"`
+	Type          ServiceType    `json:"type" gorm:"type:varchar(20);default:'git'"`
 	ProjectID     string         `json:"projectId" gorm:"type:uuid;not null;index"`
 	
-	// Git repository
-	RepoURL       string         `json:"repoUrl" gorm:"not null"`
+	// Git repository (only applicable for ServiceTypeGit)
+	RepoURL       string         `json:"repoUrl" gorm:"default:null"`
 	Branch        string         `json:"branch" gorm:"default:main"`
+	
+	// Managed services specific fields (only applicable for ServiceTypeManaged)
+	ManagedType   string         `json:"managedType" gorm:"default:null"` // postgresql, redis, minio, etc.
+	Version       string         `json:"version" gorm:"default:null"`     // 14, 6.0, latest, etc.
+	StorageSize   string         `json:"storageSize" gorm:"default:null"` // 1Gi, 10Gi, etc.
 	
 	// Environment reference
 	EnvironmentID string         `json:"environmentId" gorm:"type:uuid;index"`
