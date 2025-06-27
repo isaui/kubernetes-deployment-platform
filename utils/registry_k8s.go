@@ -86,8 +86,6 @@ func (d *RegistryDeployer) UpdateRegistry(ctx context.Context, registry models.R
 		return fmt.Errorf("failed to update deployment: %w", err)
 	}
 
-	// Service doesn't typically need updates since it's just mapping ports
-
 	return nil
 }
 

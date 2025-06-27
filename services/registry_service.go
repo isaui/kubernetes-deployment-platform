@@ -211,6 +211,9 @@ func (s *RegistryService) GetRegistryDetails(id string) (dto.RegistryDetailsResp
 	response := dto.RegistryDetailsResponse{
 		Registry:   convertRegistryToResponse(registry),
 		IsHealthy:  true, // Default to true
+		Images:     []dto.RegistryImageInfo{}, // Initialize empty slice
+		ImagesCount: 0,
+		LastSynced: nil,
 	}
 	
 	// Only fetch Kubernetes data if client is available
@@ -228,16 +231,43 @@ func (s *RegistryService) GetRegistryDetails(id string) (dto.RegistryDetailsResp
 			// Extract credentials from the secret
 			url := string(secret.Data["url"])
 			username := string(secret.Data["username"])
+			password := string(secret.Data["password"])
 			
-			// Create credentials response (don't include password in response)
+			// Create credentials response
 			response.Credentials = &dto.RegistryCredentials{
 				URL:      url,
 				Username: username,
+				Password: password,
+			}
+			
+			// Use the Registry API to get image information
+			parsedURL, err := utils.ParseRegistryURL(url)
+			if err == nil {
+				apiClient := utils.NewRegistryAPI(parsedURL, username, password)
+				
+				// Get list of images with details
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				
+				images, err := apiClient.ListImages(ctx)
+				if err == nil {
+					// Update response with image information
+					response.Images = images
+					response.ImagesCount = len(images)
+					
+					// Calculate total size
+					var totalSize int64
+					for _, img := range images {
+						totalSize += img.Size
+					}
+					response.Size = totalSize
+					
+					// Set last synced time to now
+					now := time.Now()
+					response.LastSynced = &now
+				}
 			}
 		}
-		
-		// TODO: Get more registry details from actual registry API
-		// This would require implementing a Docker Registry API client
 	}
 	
 	return response, nil

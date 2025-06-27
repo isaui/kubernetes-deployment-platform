@@ -57,6 +57,7 @@ func RegisterRoutes(router *gin.RouterGroup) {
 		statsGroup.GET("/stats/services", GetServiceStats)
 		statsGroup.GET("/stats/ingress", GetIngressStats)
 		statsGroup.GET("/stats/certificates", GetCertificateStats)
+		statsGroup.GET("/stats/pvc", GetPVCStats)
 		statsGroup.GET("/cluster/info", GetClusterInfo)
 	}
 }

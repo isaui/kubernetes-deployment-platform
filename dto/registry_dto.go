@@ -61,13 +61,14 @@ type RegistryCredentials struct {
 
 // RegistryDetailsResponse represents detailed information for a single registry including Kubernetes info
 type RegistryDetailsResponse struct {
-	Registry    RegistryResponse `json:"registry"`
-	Credentials *RegistryCredentials `json:"credentials,omitempty"`
-	Images      int              `json:"images"`
-	Size        int64            `json:"size"` // in bytes
-	IsHealthy   bool             `json:"isHealthy"`
-	KubeStatus  string           `json:"kubeStatus"`
-	LastSynced  *time.Time       `json:"lastSynced"`
+	Registry     RegistryResponse     `json:"registry"`
+	Credentials  *RegistryCredentials `json:"credentials,omitempty"`
+	Images       []RegistryImageInfo  `json:"images"`        // Detailed list of images
+	ImagesCount  int                  `json:"imagesCount"`   // Total count of images
+	Size         int64                `json:"size"`         // Total size in bytes
+	IsHealthy    bool                 `json:"isHealthy"`
+	KubeStatus   string               `json:"kubeStatus"`
+	LastSynced   *time.Time           `json:"lastSynced"`
 }
 
 // RegistryImageInfo represents information about an image in the registry
