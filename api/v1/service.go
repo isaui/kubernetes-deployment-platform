@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/services"
 )
@@ -276,32 +277,61 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	role, _ := roleValue.(string)
 	isAdmin := role == "admin"
 
-	// Parse request body
-	var req ServiceRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
+	// First, get existing service to verify type and permissions
+	existingService, err := c.serviceService.GetServiceDetail(serviceID, userID, isAdmin)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"error": "Service not found or access denied",
+		})
+		return
+	}
+
+	// Parse request body using the new DTO
+	var updateReq dto.ServiceUpdateRequest
+	if err := ctx.ShouldBindJSON(&updateReq); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	// Validate fields based on service type
-	if req.Type == models.ServiceTypeGit {
-		// Git services require RepoURL
-		if req.RepoURL == "" {
+	// Validate that the request type matches the existing service type
+	serviceType := string(existingService.Type)
+	if updateReq.Type != serviceType {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Cannot change service type",
+		})
+		return
+	}
+
+	// Create a service object for update
+	service := models.Service{
+		ID: serviceID,
+	}
+
+	// Apply the updates based on request type
+	if updateReq.Type == "git" {
+		if updateReq.Git == nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "Repository URL is required for git services",
+				"error": "Missing git configuration data",
 			})
 			return
 		}
-	} else if req.Type == models.ServiceTypeManaged {
-		// Managed services require ManagedType
-		if req.ManagedType == "" {
+		
+		// Use the DTO to update service model
+		updateReq.UpdateServiceModel(&service)
+		
+	} else if updateReq.Type == "managed" {
+		if updateReq.Managed == nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "ManagedType is required for managed services",
+				"error": "Missing managed service configuration data",
 			})
 			return
 		}
+		
+		// Use the DTO to update service model
+		updateReq.UpdateServiceModel(&service)
+		
 	} else {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": "Invalid service type",
@@ -309,38 +339,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		return
 	}
 
-	// Create service object
-	service := models.Service{
-		ID:             serviceID,
-		Name:           req.Name,
-		Type:           req.Type,
-		ProjectID:      req.ProjectID,
-		EnvironmentID:  req.EnvironmentID,
-		
-		// Git-specific fields
-		RepoURL:        req.RepoURL,
-		Branch:         req.Branch,
-		Port:           req.Port,
-		BuildCommand:   req.BuildCommand,
-		StartCommand:   req.StartCommand,
-		
-		// Managed service fields
-		ManagedType:    req.ManagedType,
-		Version:        req.Version,
-		StorageSize:    req.StorageSize,
-		
-		// Common configuration fields
-		EnvVars:        req.EnvVars,
-		CPULimit:       req.CPULimit,
-		MemoryLimit:    req.MemoryLimit,
-		IsStaticReplica: req.IsStaticReplica,
-		Replicas:       req.Replicas,
-		MinReplicas:    req.MinReplicas,
-		MaxReplicas:    req.MaxReplicas,
-		CustomDomain:   req.CustomDomain,
-	}
-
-	// Call service to update
+	// Call service layer to update
 	updatedService, err := c.serviceService.UpdateService(service, userID, isAdmin)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{
