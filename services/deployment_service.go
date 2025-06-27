@@ -64,7 +64,7 @@ func (s *DeploymentService) CreateGitDeployment(request dto.GitDeployRequest) (d
 		return dto.GitDeployResponse{}, err
 	}
 
-	go s.ProcessGitDeployment(deployment, service, registry)
+	go s.ProcessGitDeployment(deployment, service, registry, request.CallbackUrl)
 
 	return dto.GitDeployResponse{
 		DeploymentID: deployment.ID,
@@ -76,25 +76,45 @@ func (s *DeploymentService) CreateGitDeployment(request dto.GitDeployRequest) (d
 	}, nil
 }
 
-func (s *DeploymentService) ProcessGitDeployment(deployment models.Deployment, service models.Service, registry models.Registry) error {
+func (s *DeploymentService) ProcessGitDeployment(deployment models.Deployment,
+	 service models.Service, registry models.Registry, callbackUrl string) error {
+
+	// Start building the image
 	image, err := utils.BuildFromGit(deployment, service, registry)
 	if err != nil {
 		s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusFailed)
+		// Call webhook with failure status if URL exists
+		if callbackUrl != "" {
+			go utils.SendWebhookNotification(callbackUrl, deployment.ID, "failed", err.Error())
+		}
 		return err
 	}
+	
 	err = s.deploymentRepo.UpdateImage(deployment.ID, image)
 	if err != nil {
 		s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusFailed)
+		// Call webhook with failure status if URL exists
+		if callbackUrl != "" {
+			go utils.SendWebhookNotification(callbackUrl, deployment.ID, "failed", err.Error())
+		}
 		return err
 	}
 
 	err = s.DeployToKubernetes(image, service)
 	if err != nil {
 		s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusFailed)
+		// Call webhook with failure status if URL exists
+		if callbackUrl != "" {
+			go utils.SendWebhookNotification(callbackUrl, deployment.ID, "failed", err.Error())
+		}
 		return err
 	}
 	
 	s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusSuccess)
+	// Call webhook with success status if URL exists
+	if callbackUrl != "" {
+		go utils.SendWebhookNotification(callbackUrl, deployment.ID, "running", "")
+	}
 	return nil
 }
 

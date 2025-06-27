@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/services"
+	"github.com/pendeploy-simple/utils"
 )
 
 // DeploymentController handles HTTP requests for deployments
@@ -37,12 +38,20 @@ func (c *DeploymentController) CreateDeployment(ctx *gin.Context) {
 	var request dto.GitDeployRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// If there's a callbackUrl, notify of binding error
+		if request.CallbackUrl != "" {
+			go utils.SendErrorWebhook(request.CallbackUrl, "Invalid request format: " + err.Error())
+		}
 		return
 	}
 
 	response, err := c.deploymentService.CreateGitDeployment(request)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// If there's a callbackUrl, notify of deployment creation error
+		if request.CallbackUrl != "" {
+			go utils.SendErrorWebhook(request.CallbackUrl, "Deployment error: " + err.Error())
+		}
 		return
 	}
 
@@ -104,6 +113,8 @@ func (c *DeploymentController) StreamBuildLogs(ctx *gin.Context) {
 
 // StreamRuntimeLogs handles GET /api/deployments/:id/logs/runtime
 // Streams deployment logs from Kubernetes pods in Server-Sent Events format
+
+
 func (c *DeploymentController) StreamRuntimeLogs(ctx *gin.Context) {
 	id := ctx.Param("id")
 

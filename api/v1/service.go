@@ -20,6 +20,7 @@ func NewServiceController() *ServiceController {
 	}
 }
 
+
 // RegisterRoutes registers service routes
 func (c *ServiceController) RegisterRoutes(router *gin.RouterGroup) {
 	servicesGroup := router.Group("/services")
@@ -29,6 +30,7 @@ func (c *ServiceController) RegisterRoutes(router *gin.RouterGroup) {
 		servicesGroup.POST("", c.CreateService)
 		servicesGroup.PUT("/:id", c.UpdateService)
 		servicesGroup.DELETE("/:id", c.DeleteService)
+		servicesGroup.GET("/:id/deployments", c.GetDeploymentList)
 	}
 
 	// Also add project-specific service routes
@@ -36,6 +38,32 @@ func (c *ServiceController) RegisterRoutes(router *gin.RouterGroup) {
 	{
 		projects.GET("/:id/services", c.ListProjectServices)
 	}
+}
+
+func (c *ServiceController) GetDeploymentList(ctx *gin.Context) {
+	// Get service ID from URL
+	serviceID := ctx.Param("id")
+	
+	// Get userId and role from context
+	roleValue, _ := ctx.Get("role")
+	role, _ := roleValue.(string)
+	isAdmin := role == "admin"
+	userIDValue, _ := ctx.Get("userId")
+	userID := userIDValue.(string)
+
+	deployments, err := c.serviceService.GetDeploymentList(serviceID, userID, isAdmin)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"deployments": deployments,
+		},
+	})
 }
 
 // ListServices retrieves all services (admin only)

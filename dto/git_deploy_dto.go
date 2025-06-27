@@ -2,10 +2,11 @@ package dto
 
 // GitDeployRequest represents a request to deploy from a Git repository
 type GitDeployRequest struct {
-	ServiceID  string `json:"serviceId" binding:"required"` // ID of the service to deploy
-	APIKey     string `json:"apiKey" binding:"required"`    // API Key for authentication
-	CommitID   string `json:"commitId" binding:"required"`                     // Optional override for Git commit SHA/ID to deploy
-	CommitMessage string `json:"commitMessage"`              // Optional override for Git commit message to deploy
+	ServiceID     string `json:"serviceId" binding:"required"` // ID of the service to deploy
+	APIKey        string `json:"apiKey" binding:"required"`    // API Key for authentication
+	CommitID      string `json:"commitId" binding:"required"`  // Git commit SHA/ID to deploy
+	CommitMessage string `json:"commitMessage"`                // Optional override for Git commit message to deploy
+	CallbackUrl   string `json:"callbackUrl"`                 // Optional webhook URL to call on deployment success/failure
 }
 
 // GitDeployResponse represents the response for a Git deployment request

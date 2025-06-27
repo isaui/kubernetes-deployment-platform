@@ -30,6 +30,21 @@ func NewServiceService() *ServiceService {
 	}
 }
 
+func (s *ServiceService) GetDeploymentList(serviceID string, userID string, isAdmin bool) ([]dto.DeploymentResponse, error) {
+	deployments, err := s.deploymentRepo.FindByServiceID(serviceID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Map deployments to DTOs for API stability
+	deploymentResponses := make([]dto.DeploymentResponse, len(deployments))
+	for i, deployment := range deployments {
+		deploymentResponses[i] = dto.NewDeploymentResponseFromModel(deployment)
+	}
+	
+	return deploymentResponses, nil
+}
+
 // ListAllServices retrieves all services (admin only)
 func (s *ServiceService) ListAllServices() ([]models.Service, error) {
 	return s.serviceRepo.FindAll()
