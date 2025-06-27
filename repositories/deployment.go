@@ -37,6 +37,16 @@ func (r *DeploymentRepository) FindByServiceID(serviceID string) ([]models.Deplo
 	return deployments, result.Error
 }
 
+func (r *DeploymentRepository) UpdateImage(id string, image string) error {
+	var updates = map[string]interface{}{
+		"image": image,
+	}
+	result := database.DB.Model(&models.Deployment{}).
+		Where("id = ?", id).
+		Updates(updates)
+	return result.Error
+}
+
 // Create inserts a new deployment into the database
 func (r *DeploymentRepository) Create(deployment models.Deployment) (models.Deployment, error) {
 	result := database.DB.Create(&deployment)

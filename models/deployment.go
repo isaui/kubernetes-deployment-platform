@@ -25,16 +25,12 @@ type Deployment struct {
 	
 	// Build info
 	Status        DeploymentStatus  `json:"status" gorm:"type:varchar(20);default:'building'"`
-	ImageTag      string            `json:"imageTag" gorm:"default:null"` // optional for managed services
-	BuildLogs     string            `json:"buildLogs" gorm:"type:text;default:null"` // stores build logs for git, provisioning status for managed
-	
+	Image         string            `json:"image" gorm:"default:null"` // optional for managed services
 	// Managed service specific
 	Version       string            `json:"version" gorm:"type:varchar(50);default:null"` // For tracking version changes in managed services
 	
 	// Timestamps
-	CreatedAt     time.Time         `json:"createdAt"`
-	UpdatedAt     time.Time         `json:"updatedAt"`
-	DeployedAt    *time.Time        `json:"deployedAt" gorm:"default:null"`
+	CreatedAt     time.Time         `json:"createdAt" gorm:"autoCreateTime"`
 	
 	// Relation
 	Service       Service           `json:"service,omitempty" gorm:"foreignKey:ServiceID;constraint:OnDelete:CASCADE"`

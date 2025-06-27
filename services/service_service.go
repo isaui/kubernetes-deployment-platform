@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/repositories"
+	"github.com/pendeploy-simple/utils"
 )
 
 // ServiceService handles business logic for services
@@ -13,6 +15,8 @@ type ServiceService struct {
 	serviceRepo     *repositories.ServiceRepository
 	projectRepo     *repositories.ProjectRepository
 	environmentRepo *repositories.EnvironmentRepository
+	deploymentRepo  *repositories.DeploymentRepository
+	deploymentService *DeploymentService
 }
 
 // NewServiceService creates a new service service instance
@@ -21,6 +25,8 @@ func NewServiceService() *ServiceService {
 		serviceRepo:     repositories.NewServiceRepository(),
 		projectRepo:     repositories.NewProjectRepository(),
 		environmentRepo: repositories.NewEnvironmentRepository(),
+		deploymentRepo:  repositories.NewDeploymentRepository(),
+		deploymentService:  NewDeploymentService(),
 	}
 }
 
@@ -132,91 +138,157 @@ func (s *ServiceService) CreateService(service models.Service, userID string, is
 	return s.serviceRepo.Create(service)
 }
 
-// UpdateService updates an existing service
-func (s *ServiceService) UpdateService(service models.Service, userID string, isAdmin bool) (models.Service, error) {
+// UpdateService updates an existing service using selective update approach
+// This ensures that only provided fields are updated and other fields keep their existing values
+func (s *ServiceService) UpdateService(newService models.Service, userID string, isAdmin bool) (models.Service, error) {
 	// Fetch the existing service
-	existingService, err := s.serviceRepo.FindByID(service.ID)
+	existingService, err := s.serviceRepo.FindByID(newService.ID)
 	if err != nil {
-		return service, fmt.Errorf("service not found: %v", err)
+		return newService, fmt.Errorf("service not found: %v", err)
 	}
 	
 	// Check if user can access this service's project
 	if !isAdmin {
 		ownerID, err := s.projectRepo.GetOwnerID(existingService.ProjectID)
 		if err != nil {
-			return service, err
+			return newService, err
 		}
 		
 		if ownerID != userID {
-			return service, errors.New("unauthorized access to service")
+			return newService, errors.New("unauthorized access to service")
 		}
+	}
+	
+	// Start with existing service - this is important for selective update
+	updatedService := existingService
+	
+	// Only update fields that should be allowed to change
+	// Always allow name update
+	if newService.Name != "" {
+		updatedService.Name = newService.Name
 	}
 	
 	// Prevent changing project ID
-	if service.ProjectID != existingService.ProjectID {
-		return service, errors.New("cannot change project for an existing service")
+	if newService.ProjectID != "" && newService.ProjectID != existingService.ProjectID {
+		return newService, errors.New("cannot change project for an existing service")
 	}
 	
-	// Verify environment exists and belongs to the project
-	if service.EnvironmentID != existingService.EnvironmentID {
-		env, err := s.environmentRepo.FindByID(service.EnvironmentID)
+	// If environment ID is provided, verify it exists and belongs to the project
+	if newService.EnvironmentID != "" && newService.EnvironmentID != existingService.EnvironmentID {
+		env, err := s.environmentRepo.FindByID(newService.EnvironmentID)
 		if err != nil {
-			return service, errors.New("environment not found")
+			return newService, errors.New("environment not found")
 		}
 		
-		if env.ProjectID != service.ProjectID {
-			return service, errors.New("environment does not belong to the specified project")
+		if env.ProjectID != existingService.ProjectID {
+			return newService, errors.New("environment does not belong to the specified project")
+		}
+		
+		updatedService.EnvironmentID = newService.EnvironmentID
+	}
+	
+	// Type-specific updates based on existing service type
+	if existingService.Type == models.ServiceTypeGit {
+		// For Git services, allow updating branch and port
+		if newService.Branch != "" {
+			updatedService.Branch = newService.Branch
+		}
+		
+		// Port can be 0 (use default) or a positive value
+		if newService.Port > 0 {
+			updatedService.Port = newService.Port
+		}
+		
+		// Allow updating build/start commands if provided
+		if newService.BuildCommand != "" {
+			updatedService.BuildCommand = newService.BuildCommand
+		}
+		
+		if newService.StartCommand != "" {
+			updatedService.StartCommand = newService.StartCommand
+		}
+		
+		// RepoURL should not change - it's fundamental to the service
+		// updatedService.RepoURL = existingService.RepoURL (already set because we started with existingService)
+		
+	} else if existingService.Type == models.ServiceTypeManaged {
+		// For Managed services, allow updating version and storage size
+		if newService.Version != "" {
+			updatedService.Version = newService.Version
+		}
+		
+		if newService.StorageSize != "" {
+			updatedService.StorageSize = newService.StorageSize
+		}
+		
+		// ManagedType should not change for existing services
+		if newService.ManagedType != "" && newService.ManagedType != existingService.ManagedType {
+			return newService, errors.New("cannot change managed service type for an existing service")
 		}
 	}
 	
-	// Validate service fields based on type
-	if service.Type == models.ServiceTypeGit {
-		// Git-based service requires RepoURL
-		if service.RepoURL == "" {
-			return service, errors.New("repository URL is required for git services")
-		}
-		
-		// Set default branch if empty
-		if service.Branch == "" {
-			service.Branch = "main"
-		}
-	} else if service.Type == models.ServiceTypeManaged {
-		// Managed service requires ManagedType
-		if service.ManagedType == "" {
-			return service, errors.New("managed type is required for managed services")
-		}
-		
-		// Set default version if empty
-		if service.Version == "" {
-			service.Version = "latest"
-		}
-		
-		// Cannot change ManagedType for existing managed services
-		if existingService.Type == models.ServiceTypeManaged && 
-		   existingService.ManagedType != service.ManagedType {
-			return service, errors.New("cannot change managed service type for an existing service")
-		}
-	} else {
-		return service, errors.New("invalid service type")
+	// Update resource constraints if provided
+	if newService.CPULimit != "" {
+		updatedService.CPULimit = newService.CPULimit
 	}
 	
-	// Preserve fields that shouldn't be changed
-	service.APIKey = existingService.APIKey
-	service.Status = existingService.Status
-	service.Domain = existingService.Domain
-	service.CreatedAt = existingService.CreatedAt
+	if newService.MemoryLimit != "" {
+		updatedService.MemoryLimit = newService.MemoryLimit
+	}
 	
-	// Update the service
-	err = s.serviceRepo.Update(service)
+	// Update replica configuration if provided
+	if newService.IsStaticReplica != existingService.IsStaticReplica {
+		updatedService.IsStaticReplica = newService.IsStaticReplica
+	}
+	
+	if newService.Replicas > 0 {
+		updatedService.Replicas = newService.Replicas
+	}
+	
+	if newService.MinReplicas > 0 {
+		updatedService.MinReplicas = newService.MinReplicas
+	}
+	
+	if newService.MaxReplicas > 0 {
+		updatedService.MaxReplicas = newService.MaxReplicas
+	}
+	
+	// Update custom domain if provided
+	if newService.CustomDomain != "" {
+		updatedService.CustomDomain = newService.CustomDomain
+	}
+	
+	// Update environment variables if provided
+	if newService.EnvVars != nil && len(newService.EnvVars) > 0 {
+		// If we want to completely replace env vars
+		updatedService.EnvVars = newService.EnvVars
+	}
+
+	if(newService.Type == models.ServiceTypeGit){
+		deployment, err := s.deploymentRepo.GetLatestSuccessfulDeployment(updatedService.ID)
+		if err != nil {
+			return newService, err
+		}
+		
+		go s.deploymentService.CreateGitDeployment(dto.GitDeployRequest{
+			ServiceID: updatedService.ID,
+			APIKey: updatedService.APIKey,
+			CommitID: deployment.CommitSHA,
+			CommitMessage: deployment.CommitMessage,
+		})
+	}
+	
+	// Update the service in the database
+	err = s.serviceRepo.Update(updatedService)
 	if err != nil {
-		return service, err
+		return newService, err
 	}
 	
 	// Fetch the updated service with its relationships
-	return s.serviceRepo.FindByID(service.ID)
+	return s.serviceRepo.FindByID(newService.ID)
 }
 
-// DeleteService deletes a service
+// DeleteService deletes a service and all associated Kubernetes resources
 func (s *ServiceService) DeleteService(serviceID string, userID string, isAdmin bool) error {
 	// Fetch the service
 	service, err := s.serviceRepo.FindByID(serviceID)
@@ -235,7 +307,24 @@ func (s *ServiceService) DeleteService(serviceID string, userID string, isAdmin 
 			return errors.New("unauthorized access to service")
 		}
 	}
+
+	// Step 1: Delete Kubernetes resources first
+	err = utils.DeleteKubernetesResources(service)
+	if err != nil {
+		// Log the error but continue with database deletion
+		fmt.Printf("Warning: Error deleting Kubernetes resources for service %s: %v\n", serviceID, err)
+		return err
+	}
 	
-	// Delete the service
+	// Step 2: Clean up any build jobs related to this service if they exist
+	// The build jobs are in 'build-and-deploy' namespace with service ID in their name
+	buildErr := utils.DeleteBuildResources(service)
+	if buildErr != nil {
+		// Log the error but continue with deletion
+		fmt.Printf("Warning: Error deleting build resources for service %s: %v\n", serviceID, buildErr)
+		return buildErr
+	}
+	
+	// Step 3: Delete the service from database
 	return s.serviceRepo.Delete(serviceID)
 }

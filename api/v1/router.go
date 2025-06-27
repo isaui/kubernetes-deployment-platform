@@ -3,6 +3,7 @@ package v1
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/pendeploy-simple/middleware"
+	"github.com/pendeploy-simple/controllers"
 )
 
 // RegisterRoutes registers all v1 API routes
@@ -45,6 +46,10 @@ func RegisterRoutes(router *gin.RouterGroup) {
 	// Registry endpoints - protected by AuthMiddleware
 	registryController := NewRegistryController()
 	registryController.RegisterRoutes(authRouter)
+
+	// Git Deployment endpoints - protected by AuthMiddleware
+	gitDeployController := controllers.NewDeploymentController()
+	gitDeployController.RegisterRoutes(authRouter)
 
 	// Admin endpoints - protected by AdminMiddleware
 	statsGroup := router.Group("/admin")
