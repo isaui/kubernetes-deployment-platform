@@ -20,7 +20,7 @@ func GetJobName(serviceID string, deploymentID string) string {
 	return fmt.Sprintf("%s-%s-%s", serviceID, deploymentID, "build")
 }
 
-
+// GetJobNamespace returns the namespace for build jobs
 func GetJobNamespace() string {
 	return "build-and-deploy"
 }
@@ -28,8 +28,12 @@ func GetJobNamespace() string {
 // BuildFromGit creates a Kubernetes job with init container for Git clone and main container for nixpacks build
 // Returns the resulting image URL
 func BuildFromGit(deployment models.Deployment, service models.Service, registry models.Registry) (string, error) {
-    // Define the image tag
-    imageTag := fmt.Sprintf("%s/%s:%s", registry.URL, service.Name, deployment.CommitSHA)
+    // Define the image tag - use "latest" if commitSHA is empty
+    tagSuffix := "latest"
+    if deployment.CommitSHA != "" {
+        tagSuffix = deployment.CommitSHA
+    }
+    imageTag := fmt.Sprintf("%s/%s:%s", registry.URL, service.Name, tagSuffix)
     
     // Create Kubernetes client
     k8sClient, err := kubernetes.NewClient()
@@ -116,10 +120,10 @@ func createGitBuildJob(deployment models.Deployment, service models.Service, reg
                                 "sh",
                                 "-c",
                                 fmt.Sprintf(
-                                    "git clone --branch %s --single-branch %s /source && cd /source && git checkout %s",
+                                    "git clone --branch %s --single-branch %s /source && cd /source %s",
                                     branch,
                                     repoURL,
-                                    deployment.CommitSHA,
+                                    getCheckoutCommand(deployment.CommitSHA),
                                 ),
                             },
                             VolumeMounts: []corev1.VolumeMount{
@@ -205,6 +209,15 @@ func createGitBuildJob(deployment models.Deployment, service models.Service, reg
 // Helper function to convert int to *int32
 func int32Ptr(i int32) *int32 {
     return &i
+}
+
+// Helper to get the appropriate git checkout command
+// Returns empty string if CommitSHA is empty (will use HEAD of branch)
+func getCheckoutCommand(commitSHA string) string {
+    if commitSHA == "" {
+        return "" // No checkout needed, will use HEAD of branch
+    }
+    return "&& git checkout " + commitSHA
 }
 
 // generateNixpacksEnvFlags converts a map of environment variables to nixpacks --env flags

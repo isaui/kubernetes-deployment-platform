@@ -4,7 +4,7 @@ package dto
 type GitDeployRequest struct {
 	ServiceID     string `json:"serviceId" binding:"required"` // ID of the service to deploy
 	APIKey        string `json:"apiKey" binding:"required"`    // API Key for authentication
-	CommitID      string `json:"commitId" binding:"required"`  // Git commit SHA/ID to deploy
+	CommitID      string `json:"commitId"`                     // Git commit SHA/ID to deploy (if empty, latest from default branch)
 	CommitMessage string `json:"commitMessage"`                // Optional override for Git commit message to deploy
 	CallbackUrl   string `json:"callbackUrl"`                 // Optional webhook URL to call on deployment success/failure
 }
