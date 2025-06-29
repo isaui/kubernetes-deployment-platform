@@ -19,7 +19,6 @@ type Registry struct {
 	ID           string         `json:"id" gorm:"primaryKey;type:uuid;default:gen_random_uuid()"`
 	Name         string         `json:"name" gorm:"not null"`
 	URL          string         `json:"url" gorm:"default:null"`
-	Password     string         `json:"-" gorm:"default:null"` // Password hidden from JSON output
 	IsDefault    bool           `json:"isDefault" gorm:"default:false"`
 	IsActive     bool           `json:"isActive" gorm:"default:true"`
 	Status       RegistryStatus `json:"status" gorm:"type:varchar(20);default:'pending'"`

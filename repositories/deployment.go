@@ -72,20 +72,20 @@ func (r *DeploymentRepository) UpdateStatus(id string, status models.DeploymentS
 	return result.Error
 }
 
-// UpdateBuildLogs updates the build logs for a deployment
-func (r *DeploymentRepository) UpdateBuildLogs(id string, logs string) error {
-	result := database.DB.Model(&models.Deployment{}).
-		Where("id = ?", id).
-		Update("build_logs", logs)
-	return result.Error
-}
 
 // GetLatestSuccessfulDeployment retrieves the most recent successful deployment for a service
 func (r *DeploymentRepository) GetLatestSuccessfulDeployment(serviceID string) (models.Deployment, error) {
 	var deployment models.Deployment
 	result := database.DB.Where("service_id = ? AND status = ?", 
 		serviceID, models.DeploymentStatusSuccess).
-		Order("deployed_at DESC").First(&deployment)
+		Order("created_at DESC").First(&deployment)
+	return deployment, result.Error
+}
+
+func (r *DeploymentRepository) GetLatestDeployment(serviceID string) (models.Deployment, error) {
+	var deployment models.Deployment
+	result := database.DB.Where("service_id = ?", serviceID).
+		Order("created_at DESC").First(&deployment)
 	return deployment, result.Error
 }
 

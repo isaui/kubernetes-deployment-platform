@@ -40,23 +40,18 @@ type RegistryListResponse struct {
 // CreateRegistryRequest represents the request payload for creating a new registry
 type CreateRegistryRequest struct {
 	Name      string `json:"name" binding:"required"`
-	Password  string `json:"password"` // Optional - will be auto-generated if not provided
 	IsDefault bool   `json:"isDefault"`
 }
 
 // UpdateRegistryRequest represents the request payload for updating an existing registry
 type UpdateRegistryRequest struct {
 	Name      string `json:"name"`
-	Password  string `json:"password"`
 	IsDefault bool   `json:"isDefault"`
-	IsActive  bool   `json:"isActive"`
 }
 
 // RegistryCredentials holds the access information for a registry
 type RegistryCredentials struct {
 	URL      string `json:"url"`
-	Username string `json:"username"`
-	Password string `json:"password,omitempty"` // Only returned on initial creation
 }
 
 // RegistryDetailsResponse represents detailed information for a single registry including Kubernetes info

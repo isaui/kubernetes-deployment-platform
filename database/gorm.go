@@ -68,7 +68,7 @@ func Initialize() {
 	}
 
 	log.Println("✅ Connected to database")
-	
+
 	// Print connection info
 	rows, err := sqlDB.Query("SELECT version()")
 	if err == nil {

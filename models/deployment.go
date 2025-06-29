@@ -31,7 +31,7 @@ type Deployment struct {
 	
 	// Timestamps
 	CreatedAt     time.Time         `json:"createdAt" gorm:"autoCreateTime"`
-	
+	DeployedAt    time.Time         `json:"deployedAt" gorm:"default:null"`
 	// Relation
 	Service       Service           `json:"service,omitempty" gorm:"foreignKey:ServiceID;constraint:OnDelete:CASCADE"`
 }

@@ -343,3 +343,27 @@ func (s *ServiceService) DeleteService(serviceID string, userID string, isAdmin 
 	// Step 3: Delete the service from database
 	return s.serviceRepo.Delete(serviceID)
 }
+
+func (s *ServiceService) GetLatestDeployment(serviceID string, userID string, isAdmin bool) (dto.DeploymentResponse, error) {
+	deployment, deployErr := s.deploymentRepo.GetLatestDeployment(serviceID)
+	project, projectErr := s.projectRepo.FindByID(serviceID)
+	if deployErr != nil {
+		return dto.DeploymentResponse{}, deployErr
+	}
+	if(projectErr != nil){
+		return dto.DeploymentResponse{}, projectErr
+	}
+	
+	// Check if user can access this deployment's project
+	if !isAdmin {
+		ownerID, ownerErr := s.projectRepo.GetOwnerID(project.ID)
+		if(ownerErr != nil){
+			return dto.DeploymentResponse{}, ownerErr
+		}
+		
+		if ownerID != userID {
+			return dto.DeploymentResponse{}, errors.New("unauthorized access to deployment")
+		}
+	}
+	return dto.NewDeploymentResponseFromModel(deployment), nil
+}
