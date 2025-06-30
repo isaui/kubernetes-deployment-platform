@@ -19,9 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes
+// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with full exposure
 func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, error) {
-	// Update service status to building
 	service.Status = "building"
 	
 	k8sClient, err := kubernetes.NewClient()
@@ -32,21 +31,18 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 
 	ctx := context.Background()
 	
-	// Ensure namespace exists
 	if err := EnsureNamespaceExists(service.EnvironmentID); err != nil {
 		service.Status = "failed"
 		return &service, fmt.Errorf("failed to ensure namespace: %v", err)
 	}
 
-	// Set port based on managed type
+	// Set port and env vars using enhanced utils
 	service.Port = GetManagedServicePort(service.ManagedType)
-	
-	// Generate secure environment variables
 	service.EnvVars = GenerateManagedServiceEnvVars(service)
 	
 	var deploymentErrors []string
 
-	// Deploy core resources based on service type
+	// Deploy workload (StatefulSet/Deployment)
 	serviceType := GetManagedServiceType(service.ManagedType)
 	if serviceType == "StatefulSet" {
 		if err := deployStatefulSet(ctx, k8sClient, service); err != nil {
@@ -56,72 +52,77 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 		if err := deployManagedDeployment(ctx, k8sClient, service); err != nil {
 			deploymentErrors = append(deploymentErrors, fmt.Sprintf("deployment: %v", err))
 		}
-	}
-
-	// Deploy Service for internal access
-	if err := deployManagedService(ctx, k8sClient, service); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("service: %v", err))
-	}
-
-	// Deploy Ingress for external access
-	if err := deployManagedIngress(ctx, k8sClient, service); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingress: %v", err))
-	}
-
-	// Create PVC if storage is required
-	if RequiresPersistentStorage(service.ManagedType) {
-		if err := createManagedServicePVC(ctx, k8sClient, service); err != nil {
-			deploymentErrors = append(deploymentErrors, fmt.Sprintf("pvc: %v", err))
+		if RequiresPersistentStorage(service.ManagedType) {
+			if err := createManagedServicePVC(ctx, k8sClient, service); err != nil {
+				deploymentErrors = append(deploymentErrors, fmt.Sprintf("pvc: %v", err))
+			}
 		}
 	}
 
-	// Update service status based on deployment result
+	// Deploy all services and ingresses for complete exposure
+	if err := deployAllManagedServices(ctx, k8sClient, service); err != nil {
+		deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
+	}
+
+	if err := deployAllManagedIngresses(ctx, k8sClient, service); err != nil {
+		deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingresses: %v", err))
+	}
+
 	if len(deploymentErrors) > 0 {
 		service.Status = "failed"
 		return &service, fmt.Errorf("deployment failed: %s", strings.Join(deploymentErrors, "; "))
 	}
 
-	// Set external domain
 	service.Domain = GetManagedServiceExternalDomain(service)
 	service.Status = "running"
 	
-	log.Printf("Successfully deployed managed service: %s (%s)", service.Name, service.ManagedType)
+	log.Printf("Successfully deployed managed service: %s (%s) with full exposure", service.Name, service.ManagedType)
 	return &service, nil
 }
 
-// deployStatefulSet creates a StatefulSet for database services
-func deployStatefulSet(ctx context.Context, client *kubernetes.Client, service models.Service) error {
-	statefulSet := createStatefulSetSpec(service)
-	return applyStatefulSet(ctx, client, statefulSet)
+// deployAllManagedServices creates all required services for a managed service
+func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
+	
+	for _, config := range serviceConfigs {
+		k8sService := createManagedServiceSpec(service, config)
+		if err := applyManagedService(ctx, client, k8sService); err != nil {
+			return fmt.Errorf("service %s: %v", config.Name, err)
+		}
+	}
+	return nil
 }
 
-// deployManagedDeployment creates a Deployment for stateless managed services
-func deployManagedDeployment(ctx context.Context, client *kubernetes.Client, service models.Service) error {
-	deployment := createManagedDeploymentSpec(service)
-	return applyManagedDeployment(ctx, client, deployment)
+// deployAllManagedIngresses creates all required ingresses for external access
+func deployAllManagedIngresses(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
+	
+	for _, config := range serviceConfigs {
+		ingress := createManagedIngressSpec(service, config)
+		if err := applyManagedIngress(ctx, client, ingress); err != nil {
+			return fmt.Errorf("ingress %s: %v", config.Name, err)
+		}
+	}
+	return nil
 }
 
-// deployManagedService creates a Service for managed service
-func deployManagedService(ctx context.Context, client *kubernetes.Client, service models.Service) error {
-	k8sService := createManagedServiceSpec(service)
-	return applyManagedService(ctx, client, k8sService)
-}
-
-// deployManagedIngress creates an Ingress for external access
-func deployManagedIngress(ctx context.Context, client *kubernetes.Client, service models.Service) error {
-	ingress := createManagedIngressSpec(service)
-	return applyManagedIngress(ctx, client, ingress)
-}
-
-// createStatefulSetSpec creates StatefulSet specification
+// createStatefulSetSpec creates StatefulSet with all required ports
 func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	
-	replicas := int32(1) // Managed services always single replica for data consistency
-	
-	// Get container image based on managed type
+	replicas := int32(1)
 	containerImage := getManagedServiceImage(service.ManagedType, service.Version)
+
+	// Get all ports for this service type
+	exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
+	var containerPorts []corev1.ContainerPort
+	for _, config := range exposureConfigs {
+		containerPorts = append(containerPorts, corev1.ContainerPort{
+			ContainerPort: int32(config.Port),
+			Protocol:      corev1.ProtocolTCP,
+			Name:          config.Name,
+		})
+	}
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -133,25 +134,16 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 			Replicas:    &replicas,
 			ServiceName: resourceName,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": resourceName,
-				},
+				MatchLabels: map[string]string{"app": resourceName},
 			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
 							Name:  "managed-service",
 							Image: containerImage,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: int32(service.Port),
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
+							Ports: containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(service.CPULimit),
@@ -170,9 +162,8 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 		},
 	}
 
-	// Add volume mounts and volume claim templates if storage is required
+	// Add storage if required
 	if RequiresPersistentStorage(service.ManagedType) {
-		// Add volume mount
 		statefulSet.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
 			{
 				Name:      "data",
@@ -180,7 +171,6 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 			},
 		}
 
-		// Add volume claim template
 		statefulSet.Spec.VolumeClaimTemplates = []corev1.PersistentVolumeClaim{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -188,9 +178,7 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 					Labels: labels,
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{
-						corev1.ReadWriteOnce,
-					},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
 							corev1.ResourceStorage: resource.MustParse(service.StorageSize),
@@ -204,7 +192,7 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 	return statefulSet
 }
 
-// createManagedDeploymentSpec creates Deployment specification for stateless services
+// createManagedDeploymentSpec creates Deployment with all required ports
 func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
@@ -216,7 +204,18 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 
 	containerImage := getManagedServiceImage(service.ManagedType, service.Version)
 
-	return &appsv1.Deployment{
+	// Get all ports for this service type
+	exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
+	var containerPorts []corev1.ContainerPort
+	for _, config := range exposureConfigs {
+		containerPorts = append(containerPorts, corev1.ContainerPort{
+			ContainerPort: int32(config.Port),
+			Protocol:      corev1.ProtocolTCP,
+			Name:          config.Name,
+		})
+	}
+
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName,
 			Namespace: service.EnvironmentID,
@@ -226,25 +225,16 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 			RevisionHistoryLimit: int32Ptr(1),
 			Replicas:            &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": resourceName,
-				},
+				MatchLabels: map[string]string{"app": resourceName},
 			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-				},
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
 							Name:  "managed-service",
 							Image: containerImage,
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: int32(service.Port),
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
+							Ports: containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(service.CPULimit),
@@ -262,29 +252,56 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 			},
 		},
 	}
+
+	// Add storage if required
+	if RequiresPersistentStorage(service.ManagedType) {
+		deployment.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
+			{
+				Name:      "data",
+				MountPath: getManagedServiceDataPath(service.ManagedType),
+			},
+		}
+
+		deployment.Spec.Template.Spec.Volumes = []corev1.Volume{
+			{
+				Name: "data",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: fmt.Sprintf("%s-data", resourceName),
+					},
+				},
+			},
+		}
+	}
+
+	return deployment
 }
 
-// createManagedServiceSpec creates Service specification
-func createManagedServiceSpec(service models.Service) *corev1.Service {
+// createManagedServiceSpec creates Service specification for specific exposure config
+func createManagedServiceSpec(service models.Service, config ServiceExposureConfig) *corev1.Service {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
+	serviceName := resourceName
+	
+	// Add suffix for secondary services
+	if config.Name != "primary" {
+		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+	}
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      resourceName,
+			Name:      serviceName,
 			Namespace: service.EnvironmentID,
 			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{
-				"app": resourceName,
-			},
+			Selector: map[string]string{"app": resourceName},
 			Ports: []corev1.ServicePort{
 				{
-					Port:       int32(service.Port),
-					TargetPort: intstr.FromInt(service.Port),
+					Port:       int32(config.Port),
+					TargetPort: intstr.FromString(config.Name),
 					Protocol:   corev1.ProtocolTCP,
-					Name:       "service",
+					Name:       config.Name,
 				},
 			},
 			Type: corev1.ServiceTypeClusterIP,
@@ -292,32 +309,43 @@ func createManagedServiceSpec(service models.Service) *corev1.Service {
 	}
 }
 
-// createManagedIngressSpec creates Ingress specification for external access
-func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
+// createManagedIngressSpec creates Ingress specification for specific exposure config
+func createManagedIngressSpec(service models.Service, config ServiceExposureConfig) *networkingv1.Ingress {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	hostname := GetManagedServiceExternalDomain(service)
-	pathTypePrefix := networkingv1.PathTypePrefix
+	ingressName := resourceName
+	serviceName := resourceName
 	
-	// Generate TLS secret name for managed service
-	tlsSecretName := fmt.Sprintf("%s-tls", resourceName)
+	// Add suffix for secondary ingresses
+	if config.Name != "primary" {
+		ingressName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+	}
+
+	hostname := GetManagedServiceExternalDomain(service, config.Name)
+	pathTypePrefix := networkingv1.PathTypePrefix
+	tlsSecretName := fmt.Sprintf("%s-tls", ingressName)
+
+	// Build annotations based on service type
+	annotations := map[string]string{
+		"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+		"cert-manager.io/cluster-issuer": "letsencrypt-prod",
+	}
+
+	if config.IsHTTP {
+		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+	} else {
+		// TCP passthrough for databases
+		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+		annotations["traefik.ingress.kubernetes.io/router.tls.passthrough"] = "true"
+	}
 
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      resourceName,
-			Namespace: service.EnvironmentID,
-			Labels:    labels,
-			Annotations: map[string]string{
-				// Traefik configuration
-				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-				"traefik.ingress.kubernetes.io/router.tls":         "true",
-				
-				// Cert-manager configuration
-				"cert-manager.io/cluster-issuer": "letsencrypt-prod",
-				
-				// TCP mode for databases (keep this for managed services)
-				"traefik.ingress.kubernetes.io/service.serversscheme": "tcp",
-			},
+			Name:        ingressName,
+			Namespace:   service.EnvironmentID,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: []networkingv1.IngressRule{
@@ -331,9 +359,9 @@ func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
 									PathType: &pathTypePrefix,
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
-											Name: resourceName,
+											Name: serviceName,
 											Port: networkingv1.ServiceBackendPort{
-												Number: int32(service.Port),
+												Number: int32(config.Port),
 											},
 										},
 									},
@@ -346,17 +374,17 @@ func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      []string{hostname},
-					SecretName: tlsSecretName, // ✅ Added secret name
+					SecretName: tlsSecretName,
 				},
 			},
 		},
 	}
 }
 
-// createManagedServicePVC creates PVC for managed services that need storage
+// createManagedServicePVC creates PVC for Deployment-based services
 func createManagedServicePVC(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	if !RequiresPersistentStorage(service.ManagedType) {
-		return nil // Skip if no storage needed
+		return nil
 	}
 
 	resourceName := GetResourceName(service)
@@ -369,9 +397,7 @@ func createManagedServicePVC(ctx context.Context, client *kubernetes.Client, ser
 			Labels:    labels,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce,
-			},
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
 					corev1.ResourceStorage: resource.MustParse(service.StorageSize),
@@ -383,7 +409,18 @@ func createManagedServicePVC(ctx context.Context, client *kubernetes.Client, ser
 	return applyPVC(ctx, client, pvc)
 }
 
-// Helper functions for applying K8s resources
+// Helper functions for StatefulSet and Deployment deployment
+func deployStatefulSet(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+	statefulSet := createStatefulSetSpec(service)
+	return applyStatefulSet(ctx, client, statefulSet)
+}
+
+func deployManagedDeployment(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+	deployment := createManagedDeploymentSpec(service)
+	return applyManagedDeployment(ctx, client, deployment)
+}
+
+// Apply functions
 func applyStatefulSet(ctx context.Context, client *kubernetes.Client, statefulSet *appsv1.StatefulSet) error {
 	_, err := client.Clientset.AppsV1().StatefulSets(statefulSet.Namespace).Create(ctx, statefulSet, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
@@ -419,14 +456,13 @@ func applyManagedIngress(ctx context.Context, client *kubernetes.Client, ingress
 func applyPVC(ctx context.Context, client *kubernetes.Client, pvc *corev1.PersistentVolumeClaim) error {
 	_, err := client.Clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		// PVC cannot be updated, just return success if exists
 		log.Printf("PVC %s already exists, skipping creation", pvc.Name)
 		return nil
 	}
 	return err
 }
 
-// getManagedServiceImage returns Docker image for managed service
+// Service helper functions
 func getManagedServiceImage(managedType, version string) string {
 	images := map[string]string{
 		"postgresql": fmt.Sprintf("postgres:%s", version),
@@ -440,10 +476,9 @@ func getManagedServiceImage(managedType, version string) string {
 	if image, exists := images[managedType]; exists {
 		return image
 	}
-	return "alpine:latest" // fallback
+	return "alpine:latest"
 }
 
-// getManagedServiceDataPath returns data mount path for each service type
 func getManagedServiceDataPath(managedType string) string {
 	paths := map[string]string{
 		"postgresql": "/var/lib/postgresql/data",
@@ -457,5 +492,5 @@ func getManagedServiceDataPath(managedType string) string {
 	if path, exists := paths[managedType]; exists {
 		return path
 	}
-	return "/data" // fallback
+	return "/data"
 }

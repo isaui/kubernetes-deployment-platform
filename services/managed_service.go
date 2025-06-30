@@ -353,26 +353,9 @@ func (s *ManagedServiceService) deleteManagedServiceFromKubernetes(service model
 		return fmt.Errorf("failed to delete Kubernetes resources: %v", err)
 	}
 	
-	// Also delete StatefulSet if it exists (in addition to Deployment)
-	if utils.GetManagedServiceType(service.ManagedType) == "StatefulSet" {
-		err = s.deleteStatefulSet(service)
-		if err != nil {
-			log.Printf("Warning: Failed to delete StatefulSet for %s: %v", service.Name, err)
-		}
-	}
-	
 	log.Printf("Managed service %s deleted from Kubernetes", service.Name)
 	return nil
 }
-
-// deleteStatefulSet deletes StatefulSet for managed services
-func (s *ManagedServiceService) deleteStatefulSet(service models.Service) error {
-	// Use the existing delete utility which should handle StatefulSets too
-	// This is a placeholder - the actual deletion will be handled by DeleteKubernetesResources
-	log.Printf("StatefulSet deletion handled by DeleteKubernetesResources for service %s", service.Name)
-	return nil
-}
-
 // checkIfRedeploymentNeeded determines if changes require redeployment
 func (s *ManagedServiceService) checkIfRedeploymentNeeded(existing, updated models.Service) bool {
 	// Changes that require redeployment
