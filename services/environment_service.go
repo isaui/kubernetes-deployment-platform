@@ -3,7 +3,9 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 
+	"github.com/pendeploy-simple/lib/kubernetes"
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/repositories"
 )
@@ -135,7 +137,7 @@ func (s *EnvironmentService) UpdateEnvironment(env models.Environment, userID st
 	return currentEnv, nil
 }
 
-// DeleteEnvironment removes an environment if it has no associated services
+// DeleteEnvironment removes an environment and its associated Kubernetes namespace if it has no associated services
 func (s *EnvironmentService) DeleteEnvironment(environmentID string, userID string, isAdmin bool) error {
 	// Fetch the environment
 	env, err := s.environmentRepo.FindByID(environmentID)
@@ -163,6 +165,30 @@ func (s *EnvironmentService) DeleteEnvironment(environmentID string, userID stri
 	
 	if count > 0 {
 		return errors.New("cannot delete environment that has services")
+	}
+	
+	// Init Kubernetes client
+	k8sClient, err := kubernetes.NewClient()
+	if err != nil {
+		return fmt.Errorf("error initializing kubernetes client: %w", err)
+	}
+
+	// Delete namespace for environment
+	namespace := environmentID // The namespace name is the environment ID
+	
+	// Check if namespace exists
+	exists, err := k8sClient.NamespaceExists(namespace)
+	if err != nil {
+		log.Printf("Warning: Error checking namespace %s: %v", namespace, err)
+		// Continue with environment deletion even if there's an error with Kubernetes
+	} else if exists {
+		err = k8sClient.DeleteNamespace(namespace)
+		if err != nil {
+			log.Printf("Warning: Failed to delete namespace %s: %v", namespace, err)
+			// Continue with environment deletion even if namespace deletion fails
+		} else {
+			log.Printf("Successfully deleted namespace %s for environment %s", namespace, env.Name)
+		}
 	}
 	
 	// Delete the environment

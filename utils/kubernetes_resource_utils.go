@@ -17,7 +17,6 @@ import (
 func GetResourceName(service models.Service) string {
 	// Use service ID (UUID) as the resource name, but ensure it's DNS-1035 compliant
 	// UUID needs to be prefixed with a letter to be valid in Kubernetes
-	
 	// Add 's-' prefix to ensure it starts with a letter (DNS-1035 compliance)
 	return "s-" + service.ID
 }

@@ -128,6 +128,45 @@ func (r *DeploymentRepository) GetSuccessRate(serviceID string) (float64, error)
 	return float64(result.Successful) / float64(result.Total), nil
 }
 
+// FindByProjectID retrieves all deployments for services in a project
+func (r *DeploymentRepository) FindByProjectID(projectID string) ([]models.Deployment, error) {
+	var deployments []models.Deployment
+	
+	// Join with services to filter by project ID
+	result := database.DB.Joins("JOIN services ON services.id = deployments.service_id").
+		Where("services.project_id = ?", projectID).
+		Order("deployments.created_at DESC").
+		Find(&deployments)
+		
+	return deployments, result.Error
+}
+
+// CountByProjectID counts the total number of deployments for all services in a project
+func (r *DeploymentRepository) CountByProjectID(projectID string) (int64, error) {
+	var count int64
+	
+	// Join with services to filter by project ID
+	result := database.DB.Model(&models.Deployment{}).
+		Joins("JOIN services ON services.id = deployments.service_id").
+		Where("services.project_id = ?", projectID).
+		Count(&count)
+		
+	return count, result.Error
+}
+
+// CountDeploymentsByProjectIDAndStatus counts the number of deployments for a project with a specific status
+func (r *DeploymentRepository) CountDeploymentsByProjectIDAndStatus(projectID string, status models.DeploymentStatus) (int64, error) {
+	var count int64
+	
+	// Join with services to filter by project ID
+	result := database.DB.Model(&models.Deployment{}).
+		Joins("JOIN services ON services.id = deployments.service_id").
+		Where("services.project_id = ? AND deployments.status = ?", projectID, status).
+		Count(&count)
+		
+	return count, result.Error
+}
+
 // DB returns the database instance
 func (r *DeploymentRepository) DB() *gorm.DB {
 	return database.DB

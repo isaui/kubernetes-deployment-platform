@@ -7,6 +7,7 @@ import (
 	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/services"
+	"github.com/pendeploy-simple/utils"
 )
 
 // ServiceController handles service-related API endpoints
@@ -42,15 +43,33 @@ func (c *ServiceController) RegisterRoutes(router *gin.RouterGroup) {
 	}
 }
 
+// GetLatestDeployment returns latest deployment - UPDATED untuk handle managed services
 func (c *ServiceController) GetLatestDeployment(ctx *gin.Context) {
 	// Get service ID from URL
 	serviceID := ctx.Param("id")
+	
 	// Get userId and role from context
 	roleValue, _ := ctx.Get("role")
 	role, _ := roleValue.(string)
 	isAdmin := role == "admin"
 	userIDValue, _ := ctx.Get("userId")
 	userID := userIDValue.(string)
+
+	// Check if this is a git service first
+	service, err := c.serviceService.GetServiceDetail(serviceID, userID, isAdmin)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	if service.Type != models.ServiceTypeGit {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Deployments are only available for git services. Managed services don't have deployments.",
+		})
+		return
+	}
 
 	deployment, err := c.serviceService.GetLatestDeployment(serviceID, userID, isAdmin)
 	if err != nil {
@@ -67,6 +86,8 @@ func (c *ServiceController) GetLatestDeployment(ctx *gin.Context) {
 	})
 }
 
+
+// GetDeploymentList returns deployment list - UPDATED untuk handle managed services
 func (c *ServiceController) GetDeploymentList(ctx *gin.Context) {
 	// Get service ID from URL
 	serviceID := ctx.Param("id")
@@ -77,6 +98,22 @@ func (c *ServiceController) GetDeploymentList(ctx *gin.Context) {
 	isAdmin := role == "admin"
 	userIDValue, _ := ctx.Get("userId")
 	userID := userIDValue.(string)
+
+	// Check if this is a git service first
+	service, err := c.serviceService.GetServiceDetail(serviceID, userID, isAdmin)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	if service.Type != models.ServiceTypeGit {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Deployments are only available for git services. Managed services don't have deployments.",
+		})
+		return
+	}
 
 	deployments, err := c.serviceService.GetDeploymentList(serviceID, userID, isAdmin)
 	if err != nil {
@@ -92,7 +129,6 @@ func (c *ServiceController) GetDeploymentList(ctx *gin.Context) {
 		},
 	})
 }
-
 // ListServices retrieves all services (admin only)
 func (c *ServiceController) ListServices(ctx *gin.Context) {
 	// Get userId and role from context
@@ -174,38 +210,7 @@ func (c *ServiceController) GetService(ctx *gin.Context) {
 	})
 }
 
-// ServiceRequest represents a service creation/update request
-type ServiceRequest struct {
-	// Common fields for all service types
-	Name          string             `json:"name" binding:"required"`
-	Type          models.ServiceType `json:"type" binding:"required"` // "git" or "managed"
-	ProjectID     string             `json:"projectId" binding:"required"`
-	EnvironmentID string             `json:"environmentId" binding:"required"`
-	
-	// Git-specific fields (required only when Type is "git")
-	RepoURL       string             `json:"repoUrl"`
-	Branch        string             `json:"branch"`
-	Port          int                `json:"port"`
-	BuildCommand  string             `json:"buildCommand"`
-	StartCommand  string             `json:"startCommand"`
-	
-	// Managed service specific fields (required only when Type is "managed")
-	ManagedType   string             `json:"managedType"` // postgresql, redis, minio, etc.
-	Version       string             `json:"version"`     // 14, 6.0, latest, etc.
-	StorageSize   string             `json:"storageSize"` // 1Gi, 10Gi, etc.
-	
-	// Common configuration fields
-	EnvVars       models.EnvVars     `json:"envVars"`
-	CPULimit      string             `json:"cpuLimit"`
-	MemoryLimit   string             `json:"memoryLimit"`
-	IsStaticReplica bool             `json:"isStaticReplica"`
-	Replicas      int                `json:"replicas"`
-	MinReplicas   int                `json:"minReplicas"`
-	MaxReplicas   int                `json:"maxReplicas"`
-	CustomDomain  string             `json:"customDomain"`
-}
-
-// CreateService creates a new service
+// CreateService creates a new service - UPDATED untuk managed services validation
 func (c *ServiceController) CreateService(ctx *gin.Context) {
 	// Get userId and role from context
 	userIDValue, _ := ctx.Get("userId")
@@ -215,7 +220,7 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 	isAdmin := role == "admin"
 
 	// Parse request body
-	var req ServiceRequest
+	var req dto.ServiceRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
@@ -233,10 +238,42 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 			return
 		}
 	} else if req.Type == models.ServiceTypeManaged {
-		// Managed services require ManagedType
+		// Managed services require ManagedType and validation
 		if req.ManagedType == "" {
 			ctx.JSON(http.StatusBadRequest, gin.H{
 				"error": "ManagedType is required for managed services",
+			})
+			return
+		}
+		
+		// Validate managed service type
+		if !utils.IsValidManagedServiceType(req.ManagedType) {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Unsupported managed service type: " + req.ManagedType,
+			})
+			return
+		}
+		
+		// For managed services, EnvVars should not be provided by user (auto-generated)
+		if req.EnvVars != nil && len(req.EnvVars) > 0 {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Environment variables are auto-generated for managed services and cannot be specified",
+			})
+			return
+		}
+		
+		// Managed services don't need git-specific fields
+		if req.RepoURL != "" || req.Branch != "" || req.BuildCommand != "" || req.StartCommand != "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Git-specific fields (repoUrl, branch, buildCommand, startCommand) are not allowed for managed services",
+			})
+			return
+		}
+		
+		// Port is auto-determined for managed services
+		if req.Port != 0 {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Port is auto-determined for managed services and cannot be specified",
 			})
 			return
 		}
@@ -267,7 +304,7 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 		StorageSize:    req.StorageSize,
 		
 		// Common configuration fields
-		EnvVars:        req.EnvVars,
+		EnvVars:        req.EnvVars, // Will be empty for managed services
 		CPULimit:       req.CPULimit,
 		MemoryLimit:    req.MemoryLimit,
 		IsStaticReplica: req.IsStaticReplica,
@@ -291,7 +328,7 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 	})
 }
 
-// UpdateService updates an existing service
+// UpdateService updates an existing service - UPDATED untuk use existing DTO
 func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	// Get service ID from URL
 	serviceID := ctx.Param("id")
@@ -312,7 +349,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		return
 	}
 
-	// Parse request body using the new DTO
+	// Parse request body using existing DTO
 	var updateReq dto.ServiceUpdateRequest
 	if err := ctx.ShouldBindJSON(&updateReq); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
@@ -330,40 +367,21 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		return
 	}
 
+	// Validate the update request
+	if err := updateReq.ValidateServiceUpdateRequest(); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
 	// Create a service object for update
 	service := models.Service{
 		ID: serviceID,
 	}
 
-	// Apply the updates based on request type
-	if updateReq.Type == "git" {
-		if updateReq.Git == nil {
-			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "Missing git configuration data",
-			})
-			return
-		}
-		
-		// Use the DTO to update service model
-		updateReq.UpdateServiceModel(&service)
-		
-	} else if updateReq.Type == "managed" {
-		if updateReq.Managed == nil {
-			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "Missing managed service configuration data",
-			})
-			return
-		}
-		
-		// Use the DTO to update service model
-		updateReq.UpdateServiceModel(&service)
-		
-	} else {
-		ctx.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid service type",
-		})
-		return
-	}
+	// Use the DTO to update service model
+	updateReq.UpdateServiceModel(&service)
 
 	// Call service layer to update
 	updatedService, err := c.serviceService.UpdateService(service, userID, isAdmin)
@@ -378,6 +396,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 		"data": updatedService,
 	})
 }
+
 
 // DeleteService deletes a service
 func (c *ServiceController) DeleteService(ctx *gin.Context) {

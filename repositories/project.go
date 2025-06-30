@@ -47,19 +47,11 @@ func (r *ProjectRepository) Update(project models.Project) error {
 	return result.Error
 }
 
-// Delete removes a project from the database (soft delete)
+// Delete removes a project from the database (soft delete with cascade)
 func (r *ProjectRepository) Delete(id string) error {
-	// Gunakan transaction untuk memastikan konsistensi data
-	return database.DB.Transaction(func(tx *gorm.DB) error {
-		// Soft delete service terkait terlebih dahulu
-		if err := tx.Where("project_id = ?", id).Delete(&models.Service{}).Error; err != nil {
-			return err
-		}
-		
-		// Soft delete project
-		result := tx.Delete(&models.Project{}, "id = ?", id)
-		return result.Error
-	})
+	// Let cascade handle the related services
+	result := database.DB.Delete(&models.Project{}, "id = ?", id)
+	return result.Error
 }
 
 // Exists checks if a project exists (including soft-deleted ones)

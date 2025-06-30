@@ -17,7 +17,7 @@ type Environment struct {
 	
 	// Relations
 	Project   Project   `json:"project,omitempty" gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	Services  []Service `json:"services,omitempty" gorm:"foreignKey:EnvironmentID;constraint:OnDelete:SET NULL"`
+	Services  []Service `json:"services,omitempty" gorm:"foreignKey:EnvironmentID;constraint:OnDelete:CASCADE"`
 }
 
 // TableName sets the table name for Environment model

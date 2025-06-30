@@ -1,13 +1,15 @@
+// dto/service_update.go - UPDATED untuk managed services
 package dto
 
 import (
+	"fmt"
 	"github.com/pendeploy-simple/models"
 )
 
 // BaseServiceUpdateRequest berisi field umum yang boleh diupdate untuk semua jenis service
 type BaseServiceUpdateRequest struct {
 	Name          string           `json:"name,omitempty"` 
-	EnvVars       models.EnvVars   `json:"envVars,omitempty"`
+	EnvVars       models.EnvVars   `json:"envVars,omitempty"`    // Hanya untuk git services
 	CPULimit      string           `json:"cpuLimit,omitempty"`
 	MemoryLimit   string           `json:"memoryLimit,omitempty"`
 	IsStaticReplica *bool          `json:"isStaticReplica,omitempty"`
@@ -41,7 +43,7 @@ type ServiceUpdateRequest struct {
 	Managed *ManagedServiceUpdateRequest `json:"managed,omitempty"`
 }
 
-// UpdateServiceModel mengupdate model service berdasarkan request yang diterima
+// UpdateServiceModel mengupdate model service berdasarkan request yang diterima - UPDATED untuk managed services
 // Pengecekan tipe service dan validasi dilakukan diluar fungsi ini
 func (req *ServiceUpdateRequest) UpdateServiceModel(service *models.Service) {
 	var base BaseServiceUpdateRequest
@@ -60,9 +62,11 @@ func (req *ServiceUpdateRequest) UpdateServiceModel(service *models.Service) {
 	
 	// EnvironmentID tidak boleh diubah jadi tidak diproses disini
 	
-	if base.EnvVars != nil {
+	// EnvVars hanya boleh diupdate untuk git services, managed services auto-generated
+	if req.Type == "git" && base.EnvVars != nil {
 		service.EnvVars = base.EnvVars
 	}
+	// Untuk managed services, EnvVars diabaikan karena auto-generated
 	
 	if base.CPULimit != "" {
 		service.CPULimit = base.CPULimit
@@ -72,20 +76,35 @@ func (req *ServiceUpdateRequest) UpdateServiceModel(service *models.Service) {
 		service.MemoryLimit = base.MemoryLimit
 	}
 	
+	// Scaling configuration - managed services biasanya single replica tapi bisa di-override
 	if base.IsStaticReplica != nil {
-		service.IsStaticReplica = *base.IsStaticReplica
+		if req.Type == "git" {
+			service.IsStaticReplica = *base.IsStaticReplica
+		}
+		// Untuk managed services, biasanya static replica = true, tapi bisa diubah untuk beberapa services
 	}
 	
 	if base.Replicas != nil {
-		service.Replicas = *base.Replicas
+		if req.Type == "git" {
+			service.Replicas = *base.Replicas
+		} else if req.Type == "managed" {
+			// Managed services biasanya single replica, tapi allow update untuk services tertentu
+			service.Replicas = *base.Replicas
+		}
 	}
 	
 	if base.MinReplicas != nil {
-		service.MinReplicas = *base.MinReplicas
+		if req.Type == "git" {
+			service.MinReplicas = *base.MinReplicas
+		}
+		// Managed services jarang pakai autoscaling, tapi bisa untuk services tertentu
 	}
 	
 	if base.MaxReplicas != nil {
-		service.MaxReplicas = *base.MaxReplicas
+		if req.Type == "git" {
+			service.MaxReplicas = *base.MaxReplicas
+		}
+		// Managed services jarang pakai autoscaling, tapi bisa untuk services tertentu
 	}
 	
 	if base.CustomDomain != "" {
@@ -118,4 +137,35 @@ func (req *ServiceUpdateRequest) UpdateServiceModel(service *models.Service) {
 			service.StorageSize = req.Managed.StorageSize
 		}
 	}
+}
+
+// ValidateServiceUpdateRequest validates service update request based on type
+func (req *ServiceUpdateRequest) ValidateServiceUpdateRequest() error {
+	if req.Type == "git" {
+		if req.Git == nil {
+			return fmt.Errorf("git configuration is required for git service updates")
+		}
+		if req.Managed != nil {
+			return fmt.Errorf("managed configuration should not be provided for git services")
+		}
+	} else if req.Type == "managed" {
+		if req.Managed == nil {
+			return fmt.Errorf("managed configuration is required for managed service updates")
+		}
+		if req.Git != nil {
+			return fmt.Errorf("git configuration should not be provided for managed services")
+		}
+		
+		// Validate managed service specific fields
+		if req.Managed.EnvVars != nil && len(req.Managed.EnvVars) > 0 {
+			return fmt.Errorf("environment variables are auto-generated for managed services and cannot be modified")
+		}
+		
+		// Validate storage size format if provided
+		if req.Managed.StorageSize != "" && len(req.Managed.StorageSize) < 2 {
+			return fmt.Errorf("invalid storage size format")
+		}
+	}
+	
+	return nil
 }

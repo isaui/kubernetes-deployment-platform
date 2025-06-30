@@ -2,8 +2,10 @@ package services
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/pendeploy-simple/dto"
+	"github.com/pendeploy-simple/lib/kubernetes"
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/repositories"
 )
@@ -189,9 +191,13 @@ func (s *ProjectService) GetProjectStats(projectID string, userID string, isAdmi
 	
 	// Variables to track total deployments
 	var totalDeployments int64 = 0
-	var successfulDeployments int64 = 0
-	var failedDeployments int64 = 0
-	var inProgressDeployments int64 = 0
+	
+	// Get deployments stats directly from repository using the project ID
+	// This is more efficient than counting per service
+	totalDeployments, _ = deploymentRepo.CountByProjectID(projectID)
+	successfulDeployments, _ := deploymentRepo.CountDeploymentsByProjectIDAndStatus(projectID, models.DeploymentStatusSuccess)
+	failedDeployments, _ := deploymentRepo.CountDeploymentsByProjectIDAndStatus(projectID, models.DeploymentStatusFailed)
+	inProgressDeployments, _ := deploymentRepo.CountDeploymentsByProjectIDAndStatus(projectID, models.DeploymentStatusBuilding)
 	
 	// Process each service
 	for _, service := range services {
@@ -203,7 +209,6 @@ func (s *ProjectService) GetProjectStats(projectID string, userID string, isAdmi
 		
 		// Get deployments for this service
 		deploymentCount, _ := deploymentRepo.CountByServiceID(service.ID)
-		totalDeployments += deploymentCount
 		
 		// Get successful deployments
 		successRate, _ := deploymentRepo.GetSuccessRate(service.ID)
@@ -231,19 +236,6 @@ func (s *ProjectService) GetProjectStats(projectID string, userID string, isAdmi
 			IsAutoScaling:   !service.IsStaticReplica,
 		}
 		stats.Services.ServiceList = append(stats.Services.ServiceList, serviceItem)
-		
-		// Count deployments by status (could be done in a single query for better performance)
-		// This is a simplified approach
-		if deploymentCount > 0 {
-			latestDeployment, _ := deploymentRepo.GetLatestSuccessfulDeployment(service.ID)
-			if string(latestDeployment.Status) == string(models.DeploymentStatusSuccess) {
-				successfulDeployments++
-			} else if string(latestDeployment.Status) == string(models.DeploymentStatusFailed) {
-				failedDeployments++
-			} else if string(latestDeployment.Status) == string(models.DeploymentStatusBuilding) {
-				inProgressDeployments++
-			}
-		}
 	}
 	
 	// Update deployment stats
@@ -320,7 +312,7 @@ func (s *ProjectService) UpdateProject(project models.Project, userID string, is
 	return project, nil
 }
 
-// DeleteProject deletes a project (soft delete)
+// DeleteProject deletes a project and all associated kubernetes resources
 func (s *ProjectService) DeleteProject(projectID string, userID string, isAdmin bool) error {
 	// Cek apakah project dengan ID tersebut ada di database (tanpa filter deleted_at)
 	exists, err := s.projectRepo.Exists(projectID)
@@ -344,7 +336,42 @@ func (s *ProjectService) DeleteProject(projectID string, userID string, isAdmin 
 			return fmt.Errorf("unauthorized: you don't have permission to delete this project")
 		}
 	}
-	
-	// Lakukan soft delete
+
+	// Get all project environments before deleting
+	environments, err := s.environmentRepo.FindByProjectID(projectID)
+	if err != nil {
+		return fmt.Errorf("error fetching project environments: %w", err)
+	}
+
+	// Init Kubernetes client
+	k8sClient, err := kubernetes.NewClient()
+	if err != nil {
+		return fmt.Errorf("error initializing kubernetes client: %w", err)
+	}
+
+	// Delete all kubernetes namespaces for each environment
+	for _, env := range environments {
+		// Delete namespace for environment
+		namespace := env.ID // The namespace name is the environment ID
+		
+		// Check if namespace exists
+		exists, err := k8sClient.NamespaceExists(namespace)
+		if err != nil {
+			log.Printf("Warning: Error checking namespace %s: %v", namespace, err)
+			continue
+		}
+
+		if exists {
+			err = k8sClient.DeleteNamespace(namespace)
+			if err != nil {
+				log.Printf("Warning: Failed to delete namespace %s: %v", namespace, err)
+				// Continue with other namespaces even if one fails
+			} else {
+				log.Printf("Successfully deleted namespace %s for environment %s", namespace, env.Name)
+			}
+		}
+	}
+
+	// Lakukan soft delete - cascade will handle related records
 	return s.projectRepo.Delete(projectID)
 }
