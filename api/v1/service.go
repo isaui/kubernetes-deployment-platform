@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -332,6 +333,7 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	// Get service ID from URL
 	serviceID := ctx.Param("id")
+	log.Println(serviceID)
 	
 	// Get userId and role from context
 	userIDValue, _ := ctx.Get("userId")
@@ -343,6 +345,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	// First, get existing service to verify type and permissions
 	existingService, err := c.serviceService.GetServiceDetail(serviceID, userID, isAdmin)
 	if err != nil {
+		log.Println("service not found")
 		ctx.JSON(http.StatusNotFound, gin.H{
 			"error": "Service not found or access denied",
 		})
@@ -352,6 +355,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	// Parse request body using existing DTO
 	var updateReq dto.ServiceUpdateRequest
 	if err := ctx.ShouldBindJSON(&updateReq); err != nil {
+		log.Println("error binding json")
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
@@ -361,6 +365,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 	// Validate that the request type matches the existing service type
 	serviceType := string(existingService.Type)
 	if updateReq.Type != serviceType {
+		log.Println("service type not match")
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": "Cannot change service type",
 		})
@@ -369,6 +374,7 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 
 	// Validate the update request
 	if err := updateReq.ValidateServiceUpdateRequest(); err != nil {
+		log.Println("error validating update request")
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
@@ -382,10 +388,12 @@ func (c *ServiceController) UpdateService(ctx *gin.Context) {
 
 	// Use the DTO to update service model
 	updateReq.UpdateServiceModel(&service)
-
+	log.Println("update service model")
+    log.Println(service)
 	// Call service layer to update
 	updatedService, err := c.serviceService.UpdateService(service, userID, isAdmin)
 	if err != nil {
+		log.Println("error updating service")
 		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})

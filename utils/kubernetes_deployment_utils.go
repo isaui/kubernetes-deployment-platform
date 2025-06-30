@@ -244,6 +244,13 @@ func createIngressSpec(service models.Service) *networkingv1.Ingress {
 	labels := GetResourceLabels(service)
 	hostnames := buildHostnames(service)
 	pathTypePrefix := networkingv1.PathTypePrefix
+	
+	// Generate TLS secret name based on service
+	// Option 1: Standard approach (recommended)
+	tlsSecretName := fmt.Sprintf("%s-tls", resourceName)
+	
+	// Option 2: Replace hyphens if you're paranoid (NOT needed)
+	// tlsSecretName := strings.ReplaceAll(resourceName, "-", "") + "tls"
 
 	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
@@ -251,15 +258,24 @@ func createIngressSpec(service models.Service) *networkingv1.Ingress {
 			Namespace: service.EnvironmentID,
 			Labels:    labels,
 			Annotations: map[string]string{
+				// Traefik configuration
 				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
 				"traefik.ingress.kubernetes.io/router.tls":         "true",
+				
+				// Cert-manager configuration
+				"cert-manager.io/cluster-issuer": "letsencrypt-prod",
+				
+				// Optional: HTTP to HTTPS redirect (Traefik handles this automatically for websecure)
+				// "traefik.ingress.kubernetes.io/redirect-permanent": "true",
+				// "traefik.ingress.kubernetes.io/redirect-scheme": "https",
 			},
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: []networkingv1.IngressRule{},
 			TLS: []networkingv1.IngressTLS{
 				{
-					Hosts: hostnames,
+					Hosts:      hostnames,
+					SecretName: tlsSecretName, // ✅ This is the key fix!
 				},
 			},
 		},

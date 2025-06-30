@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/models"
@@ -177,12 +178,20 @@ func (s *GitService) UpdateGitService(newService models.Service, userID string, 
 	
 	// Update environment variables if provided
 	if newService.EnvVars != nil && len(newService.EnvVars) > 0 {
+		log.Println("update env vars")
 		// If we want to completely replace env vars
 		updatedService.EnvVars = newService.EnvVars
+		log.Println(updatedService.EnvVars)
 	}
 
 	// Trigger redeployment for git services
 	deployment, err := s.deploymentRepo.GetLatestDeployment(updatedService.ID)
+	if err != nil {
+		return newService, err
+	}
+	updatedService.Status = "building"
+	// Update the service in the database
+	err = s.serviceRepo.Update(updatedService)
 	if err != nil {
 		return newService, err
 	}
@@ -194,12 +203,7 @@ func (s *GitService) UpdateGitService(newService models.Service, userID string, 
 		CommitMessage: deployment.CommitMessage,
 	})
 	
-	updatedService.Status = "building"
-	// Update the service in the database
-	err = s.serviceRepo.Update(updatedService)
-	if err != nil {
-		return newService, err
-	}
+	
 	
 	// Fetch the updated service with its relationships
 	return s.serviceRepo.FindByID(newService.ID)

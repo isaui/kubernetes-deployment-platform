@@ -298,6 +298,9 @@ func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
 	labels := GetResourceLabels(service)
 	hostname := GetManagedServiceExternalDomain(service)
 	pathTypePrefix := networkingv1.PathTypePrefix
+	
+	// Generate TLS secret name for managed service
+	tlsSecretName := fmt.Sprintf("%s-tls", resourceName)
 
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
@@ -305,9 +308,14 @@ func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
 			Namespace: service.EnvironmentID,
 			Labels:    labels,
 			Annotations: map[string]string{
+				// Traefik configuration
 				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
 				"traefik.ingress.kubernetes.io/router.tls":         "true",
-				// TCP mode for databases
+				
+				// Cert-manager configuration
+				"cert-manager.io/cluster-issuer": "letsencrypt-prod",
+				
+				// TCP mode for databases (keep this for managed services)
 				"traefik.ingress.kubernetes.io/service.serversscheme": "tcp",
 			},
 		},
@@ -337,7 +345,8 @@ func createManagedIngressSpec(service models.Service) *networkingv1.Ingress {
 			},
 			TLS: []networkingv1.IngressTLS{
 				{
-					Hosts: []string{hostname},
+					Hosts:      []string{hostname},
+					SecretName: tlsSecretName, // ✅ Added secret name
 				},
 			},
 		},
