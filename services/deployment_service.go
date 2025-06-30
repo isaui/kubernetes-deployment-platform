@@ -108,9 +108,10 @@ func (s *DeploymentService) ProcessGitDeployment(deployment models.Deployment,
 		return err
 	}
 
-	err = s.DeployToKubernetes(image, service)
+	updatedService, err := s.DeployToKubernetes(image, service)
 	if err != nil {
 		s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusFailed)
+		s.serviceRepo.Update(*updatedService)
 		// Call webhook with failure status if URL exists
 		if callbackUrl != "" {
 			go utils.SendWebhookNotification(callbackUrl, deployment.ID, "failed", err.Error())
@@ -119,7 +120,7 @@ func (s *DeploymentService) ProcessGitDeployment(deployment models.Deployment,
 	}
 	
 	log.Println("Deployment successful for service:", service.Name)
-	
+	s.serviceRepo.Update(*updatedService)
 	s.deploymentRepo.UpdateStatus(deployment.ID, models.DeploymentStatusSuccess)
 	// Call webhook with success status if URL exists
 	if callbackUrl != "" {
@@ -128,16 +129,16 @@ func (s *DeploymentService) ProcessGitDeployment(deployment models.Deployment,
 	return nil
 }
 
-func (s *DeploymentService) DeployToKubernetes(imageUrl string, service models.Service) error {
+func (s *DeploymentService) DeployToKubernetes(imageUrl string, service models.Service) (*models.Service, error) {
 	// Deploy all Kubernetes resources (Deployment, Service, Ingress) atomically
 	log.Println("Deploying to Kubernetes for service:", service.Name)
-	err := utils.DeployToKubernetesAtomically(imageUrl, service)
+	updatedService, err := utils.DeployToKubernetesAtomically(imageUrl, service)
 	if err != nil {
 		log.Println("Error deploying to Kubernetes:", err)
-		return fmt.Errorf("failed to deploy to Kubernetes: %v", err)
+		return nil, fmt.Errorf("failed to deploy to Kubernetes: %v", err)
 	}
 	
-	return nil
+	return updatedService, nil
 }
 
 func (s *DeploymentService) GetDeploymentByID(id string) (*dto.DeploymentResponse, error) {
