@@ -16,7 +16,7 @@ import (
 	"github.com/pendeploy-simple/utils"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 type DeploymentService struct {
@@ -263,89 +263,22 @@ func (s *DeploymentService) GetServiceBuildLogsRealtime(deploymentID string, w h
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	
-	// Wait for job pod
-	podName, err := s.waitForJobPod(ctx, k8sClient, namespace, jobName, w, flusher)
+	// Handle client disconnect
+	if cn, ok := w.(http.CloseNotifier); ok {
+		go func() {
+			<-cn.CloseNotify()
+			cancel()
+		}()
+	}
+	
+	// Wait for job pod using watch
+	podName, err := s.watchForJobPod(ctx, k8sClient, namespace, jobName, w, flusher)
 	if err != nil {
 		return err
 	}
 	
-	// Stream logs with dynamic container discovery
-	return s.streamBuildLogsFromAllContainers(ctx, k8sClient, namespace, podName, w, flusher)
-}
-
-// streamBuildLogsFromAllContainers streams logs from all containers dynamically
-func (s *DeploymentService) streamBuildLogsFromAllContainers(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName string, w http.ResponseWriter, flusher http.Flusher) error {
-	// Get pod details to discover containers dynamically
-	pod, err := k8sClient.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	
-	// Build container list: init containers first, then main containers
-	var containers []string
-	for _, initContainer := range pod.Spec.InitContainers {
-		containers = append(containers, initContainer.Name)
-	}
-	for _, container := range pod.Spec.Containers {
-		containers = append(containers, container.Name)
-	}
-	
-	// Stream logs from each container
-	for _, containerName := range containers {
-		// Stream logs for this container
-		err := s.streamSingleContainerLogs(ctx, k8sClient, namespace, podName, containerName, w, flusher)
-		if err != nil {
-			log.Printf("Warning: Error streaming logs from %s: %v", containerName, err)
-		}
-	}
-	
-	return nil
-}
-
-// streamSingleContainerLogs streams logs from a single container
-func (s *DeploymentService) streamSingleContainerLogs(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName, containerName string, w http.ResponseWriter, flusher http.Flusher) error {
-	// Wait for container to be ready
-	err := s.waitForContainerReady(ctx, k8sClient, namespace, podName, containerName)
-	if err != nil {
-		return fmt.Errorf("container %s not ready: %v", containerName, err)
-	}
-	
-	// Stream historical + live logs
-	logOpts := &corev1.PodLogOptions{
-		Follow:     true,
-		Container:  containerName,
-		TailLines:  int64Ptr(100),
-		Timestamps: false, // Hapus timestamp container, biar frontend yang handle
-	}
-	
-	req := k8sClient.Clientset.CoreV1().Pods(namespace).GetLogs(podName, logOpts)
-	logs, err := req.Stream(ctx)
-	if err != nil {
-		return fmt.Errorf("error opening log stream for %s: %v", containerName, err)
-	}
-	defer func() {
-		if logs != nil {
-			logs.Close()
-		}
-	}()
-	
-	// Stream logs line by line
-	scanner := bufio.NewScanner(logs)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			utils.WriteSSEData(w, scanner.Text())
-			flusher.Flush()
-		}
-	}
-	
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		return fmt.Errorf("error reading logs from %s: %v", containerName, err)
-	}
-	
-	return nil
+	// Stream logs from pod level
+	return s.streamPodLogs(ctx, k8sClient, namespace, podName, w, flusher)
 }
 
 func (s *DeploymentService) GetServiceRuntimeLogsRealtime(serviceID string, w http.ResponseWriter) error {
@@ -386,52 +319,146 @@ func (s *DeploymentService) GetServiceRuntimeLogsRealtime(serviceID string, w ht
 		}()
 	}
 	
-	// Get current pod (single attempt, no reconnect)
+	// Watch for deployment pods and stream logs
+	return s.watchAndStreamRuntimeLogs(ctx, k8sClient, namespace, deploymentResourceName, w, flusher)
+}
+
+// watchForJobPod uses watch API to wait for job pod
+func (s *DeploymentService) watchForJobPod(ctx context.Context, k8sClient *kubernetes.Client, namespace, jobName string, w http.ResponseWriter, flusher http.Flusher) (string, error) {
+	// Create watch for pods with job label
+	watchOpts := metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+		Watch:         true,
+	}
+	
+	watcher, err := k8sClient.Clientset.CoreV1().Pods(namespace).Watch(ctx, watchOpts)
+	if err != nil {
+		return "", fmt.Errorf("failed to create pod watcher: %v", err)
+	}
+	defer watcher.Stop()
+	
+	// Wait for pod with timeout
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer timeoutCancel()
+	
+	for {
+		select {
+		case <-timeoutCtx.Done():
+			return "", fmt.Errorf("timeout waiting for job pod")
+		case event := <-watcher.ResultChan():
+			if event.Type == watch.Error {
+				return "", fmt.Errorf("watch error: %v", event.Object)
+			}
+			
+			if event.Type == watch.Added || event.Type == watch.Modified {
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					continue
+				}
+				
+				// Pod found, return name
+				utils.WriteSSEData(w, fmt.Sprintf("Pod %s found, starting log stream...", pod.Name))
+				flusher.Flush()
+				return pod.Name, nil
+			}
+		}
+	}
+}
+
+// watchAndStreamRuntimeLogs watches for deployment pods and streams their logs
+func (s *DeploymentService) watchAndStreamRuntimeLogs(ctx context.Context, k8sClient *kubernetes.Client, namespace, deploymentName string, w http.ResponseWriter, flusher http.Flusher) error {
+	// First, try to get current pod
 	podList, err := k8sClient.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", deploymentResourceName),
+		LabelSelector: fmt.Sprintf("app=%s", deploymentName),
 	})
 	
+	var currentPod *corev1.Pod
+	if err == nil && len(podList.Items) > 0 {
+		// Get the newest running pod
+		for i := range podList.Items {
+			pod := &podList.Items[i]
+			if pod.Status.Phase == corev1.PodRunning {
+				currentPod = pod
+				break
+			}
+		}
+	}
+	
+	// If we have a current pod, stream its logs first
+	if currentPod != nil {
+		utils.WriteSSEData(w, fmt.Sprintf("Streaming logs from current pod: %s", currentPod.Name))
+		flusher.Flush()
+		
+		// Stream current pod logs in background
+		go func() {
+			s.streamPodLogs(ctx, k8sClient, namespace, currentPod.Name, w, flusher)
+		}()
+	}
+	
+	// Watch for new pods (for rolling updates, restarts, etc.)
+	watchOpts := metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", deploymentName),
+		Watch:         true,
+	}
+	
+	watcher, err := k8sClient.Clientset.CoreV1().Pods(namespace).Watch(ctx, watchOpts)
 	if err != nil {
+		return fmt.Errorf("failed to create pod watcher: %v", err)
+	}
+	defer watcher.Stop()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event := <-watcher.ResultChan():
+			if event.Type == watch.Error {
+				log.Printf("Watch error: %v", event.Object)
+				continue
+			}
+			
+			if event.Type == watch.Added || event.Type == watch.Modified {
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					continue
+				}
+				
+				// Only stream from running pods
+				if pod.Status.Phase == corev1.PodRunning {
+					utils.WriteSSEData(w, fmt.Sprintf("New pod detected: %s, switching log stream...", pod.Name))
+					flusher.Flush()
+					
+					// Stream new pod logs
+					go func(podName string) {
+						s.streamPodLogs(ctx, k8sClient, namespace, podName, w, flusher)
+					}(pod.Name)
+				}
+			}
+		}
+	}
+}
+
+// streamPodLogs streams logs from pod level (all containers combined)
+func (s *DeploymentService) streamPodLogs(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName string, w http.ResponseWriter, flusher http.Flusher) error {
+	// Wait for pod to be ready
+	err := s.waitForPodReady(ctx, k8sClient, namespace, podName)
+	if err != nil {
+		log.Printf("Pod %s not ready: %v", podName, err)
 		return err
 	}
 	
-	if len(podList.Items) == 0 {
-		return fmt.Errorf("no pods found")
-	}
-	
-	// Use first available pod
-	pod := podList.Items[0]
-	
-	// Stream runtime logs (single attempt)
-	return s.streamRuntimeLogsFromPod(ctx, k8sClient, namespace, pod.Name, w, flusher)
-}
-
-// streamRuntimeLogsFromPod streams runtime logs from a single pod
-func (s *DeploymentService) streamRuntimeLogsFromPod(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName string, w http.ResponseWriter, flusher http.Flusher) error {
-	// Get pod details to find container dynamically
-	pod, err := k8sClient.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to get pod: %v", err)
-	}
-	
-	// Use first container or default to "app"
-	containerName := "app"
-	if len(pod.Spec.Containers) > 0 {
-		containerName = pod.Spec.Containers[0].Name
-	}
-	
-	// Stream logs with recent history + follow (realtime)
+	// Stream logs from all containers in pod (combined)
 	logOpts := &corev1.PodLogOptions{
 		Follow:     true,
-		Container:  containerName,
-		Timestamps: false, // Hapus timestamp container, biar frontend yang handle
-		TailLines:  int64Ptr(50), // Recent 50 lines
+		Timestamps: false,
+		TailLines:  int64Ptr(100),
+		// No container specified = all containers combined
 	}
 	
 	req := k8sClient.Clientset.CoreV1().Pods(namespace).GetLogs(podName, logOpts)
 	logs, err := req.Stream(ctx)
 	if err != nil {
-		return fmt.Errorf("error opening runtime log stream: %v", err)
+		return fmt.Errorf("error opening log stream for pod %s: %v", podName, err)
 	}
 	defer func() {
 		if logs != nil {
@@ -439,7 +466,7 @@ func (s *DeploymentService) streamRuntimeLogsFromPod(ctx context.Context, k8sCli
 		}
 	}()
 	
-	// Stream logs line by line until context cancelled
+	// Stream logs line by line
 	scanner := bufio.NewScanner(logs)
 	for scanner.Scan() {
 		select {
@@ -452,89 +479,52 @@ func (s *DeploymentService) streamRuntimeLogsFromPod(ctx context.Context, k8sCli
 	}
 	
 	if err := scanner.Err(); err != nil && err != io.EOF {
-		return fmt.Errorf("error reading runtime logs: %v", err)
+		return fmt.Errorf("error reading logs from pod %s: %v", podName, err)
 	}
 	
 	return nil
 }
 
-func (s *DeploymentService) waitForJobPod(ctx context.Context, k8sClient *kubernetes.Client, namespace, jobName string, w http.ResponseWriter, flusher http.Flusher) (string, error) {
-	maxWait := 3 * time.Minute
-	checkInterval := 5 * time.Second
+// waitForPodReady waits for pod to be in running state
+func (s *DeploymentService) waitForPodReady(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName string) error {
+	// Create watch for specific pod
+	watchOpts := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("metadata.name=%s", podName),
+		Watch:         true,
+	}
 	
-	err := wait.PollImmediate(checkInterval, maxWait, func() (bool, error) {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-			podList, err := k8sClient.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("job-name=%s", jobName),
-			})
-			
-			if err != nil {
-				return false, nil // Continue polling
-			}
-			
-			if len(podList.Items) > 0 {
-				return true, nil // Found pod
-			}
-			
-			return false, nil // Continue polling
-		}
-	})
-	
+	watcher, err := k8sClient.Clientset.CoreV1().Pods(namespace).Watch(ctx, watchOpts)
 	if err != nil {
-		return "", fmt.Errorf("timeout waiting for job pod: %v", err)
+		return fmt.Errorf("failed to create pod status watcher: %v", err)
 	}
+	defer watcher.Stop()
 	
-	// Get pod name
-	podList, err := k8sClient.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
-	})
-	if err != nil || len(podList.Items) == 0 {
-		return "", fmt.Errorf("failed to get job pod after wait")
-	}
+	// Wait for pod to be ready with timeout
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer timeoutCancel()
 	
-	return podList.Items[0].Name, nil
-}
-
-// waitForContainerReady waits for container to be ready
-func (s *DeploymentService) waitForContainerReady(ctx context.Context, k8sClient *kubernetes.Client, namespace, podName, containerName string) error {
-	maxWait := 2 * time.Minute
-	checkInterval := 2 * time.Second
-	
-	err := wait.PollImmediate(checkInterval, maxWait, func() (bool, error) {
+	for {
 		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-			pod, err := k8sClient.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
-			if err != nil {
-				return false, nil // Continue polling
+		case <-timeoutCtx.Done():
+			return fmt.Errorf("timeout waiting for pod %s to be ready", podName)
+		case event := <-watcher.ResultChan():
+			if event.Type == watch.Error {
+				return fmt.Errorf("watch error: %v", event.Object)
 			}
 			
-			// Check init containers
-			for _, status := range pod.Status.InitContainerStatuses {
-				if status.Name == containerName {
-					if status.State.Running != nil || status.State.Terminated != nil {
-						return true, nil
-					}
+			if event.Type == watch.Added || event.Type == watch.Modified {
+				pod, ok := event.Object.(*corev1.Pod)
+				if !ok {
+					continue
+				}
+				
+				// Check if pod is running or has logs available
+				if pod.Status.Phase == corev1.PodRunning ||
+					pod.Status.Phase == corev1.PodSucceeded ||
+					pod.Status.Phase == corev1.PodFailed {
+					return nil
 				}
 			}
-			
-			// Check main containers
-			for _, status := range pod.Status.ContainerStatuses {
-				if status.Name == containerName {
-					if status.State.Running != nil || status.State.Terminated != nil {
-						return true, nil
-					}
-				}
-			}
-			
-			return false, nil // Continue polling
 		}
-	})
-	
-	return err
+	}
 }
-

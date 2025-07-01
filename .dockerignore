@@ -1,0 +1,65 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+main
+app
+*.bin
+
+# Go build cache
+.cache/
+go.sum
+
+# Vendor (if using)
+vendor/
+
+# Test files
+*_test.go
+testdata/
+coverage.txt
+coverage.html
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Documentation
+README.md
+docs/
+*.md
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Air (live reload) files
+.air.toml
+tmp/
+
+# Config files (development)
+config.dev.yaml
+config.local.yaml
