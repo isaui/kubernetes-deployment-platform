@@ -17,6 +17,8 @@ import (
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with full exposure
@@ -93,17 +95,97 @@ func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, se
 	return nil
 }
 
-// deployAllManagedIngresses creates all required ingresses for external access
+// deployAllManagedIngresses creates all required ingresses/tcp routes for external access
 func deployAllManagedIngresses(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
 	for _, config := range serviceConfigs {
-		ingress := createManagedIngressSpec(service, config)
-		if err := applyManagedIngress(ctx, client, ingress); err != nil {
-			return fmt.Errorf("ingress %s: %v", config.Name, err)
+		if config.IsHTTP {
+			// Create HTTP Ingress for web services (MinIO console, RabbitMQ management)
+			ingress := createManagedIngressSpec(service, config)
+			if err := applyManagedIngress(ctx, client, ingress); err != nil {
+				return fmt.Errorf("http ingress %s: %v", config.Name, err)
+			}
+			log.Printf("Created HTTP Ingress for %s (%s)", service.Name, config.Name)
+		} else {
+			// Create TCP IngressRoute for database services (PostgreSQL, MySQL, Redis, MongoDB, RabbitMQ AMQP)
+			tcpRoute := createTCPIngressRouteSpec(service, config)
+			if err := applyTCPIngressRoute(ctx, client, tcpRoute); err != nil {
+				return fmt.Errorf("tcp ingress route %s: %v", config.Name, err)
+			}
+			log.Printf("Created TCP IngressRoute for %s (%s)", service.Name, config.Name)
 		}
 	}
 	return nil
+}
+
+// createTCPIngressRouteSpec creates Traefik IngressRouteTCP for database services
+func createTCPIngressRouteSpec(service models.Service, config ServiceExposureConfig) *unstructured.Unstructured {
+	resourceName := GetResourceName(service)
+	labels := GetResourceLabels(service)
+	routeName := resourceName
+	serviceName := resourceName
+	
+	// Add suffix for secondary routes
+	if config.Name != "primary" {
+		routeName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+	}
+
+	
+	
+	// Get appropriate entrypoint based on service type
+	entryPoint := getTCPEntryPoint(service.ManagedType, config.Name)
+
+	// Create IngressRouteTCP spec
+	tcpRoute := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "traefik.io/v1alpha1",
+			"kind":       "IngressRouteTCP",
+			"metadata": map[string]interface{}{
+				"name":      routeName,
+				"namespace": service.EnvironmentID,
+				"labels":    labels,
+			},
+			"spec": map[string]interface{}{
+				"entryPoints": []interface{}{entryPoint},
+				"routes": []interface{}{
+					map[string]interface{}{
+						"match": "HostSNI(`*`)",  // Accept all traffic on this entrypoint
+						"services": []interface{}{
+							map[string]interface{}{
+								"name": serviceName,
+								"port": config.Port,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return tcpRoute
+}
+
+// getTCPEntryPoint returns the appropriate Traefik entrypoint for each service type
+func getTCPEntryPoint(managedType, configName string) string {
+	switch managedType {
+	case "postgresql":
+		return "postgresql"  // port 5432
+	case "mysql":
+		return "mysql"       // port 3306
+	case "redis":
+		return "redis"       // port 6379
+	case "mongodb":
+		return "mongodb"     // port 27017
+	case "rabbitmq":
+		if configName == "primary" {
+			return "rabbitmq"  // port 5672 for AMQP
+		}
+		return "websecure"   // port 443 for management UI (HTTP)
+	default:
+		return "websecure"   // fallback for unknown services
+	}
 }
 
 // createStatefulSetSpec creates StatefulSet with all required ports
@@ -309,7 +391,7 @@ func createManagedServiceSpec(service models.Service, config ServiceExposureConf
 	}
 }
 
-// createManagedIngressSpec creates Ingress specification for specific exposure config
+// createManagedIngressSpec creates Ingress specification for HTTP services only
 func createManagedIngressSpec(service models.Service, config ServiceExposureConfig) *networkingv1.Ingress {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
@@ -326,18 +408,11 @@ func createManagedIngressSpec(service models.Service, config ServiceExposureConf
 	pathTypePrefix := networkingv1.PathTypePrefix
 	tlsSecretName := fmt.Sprintf("%s-tls", ingressName)
 
-	// Build annotations based on service type
+	// HTTP Ingress annotations
 	annotations := map[string]string{
 		"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-		"cert-manager.io/cluster-issuer": "letsencrypt-prod",
-	}
-
-	if config.IsHTTP {
-		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-	} else {
-		// TCP passthrough for databases
-		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-		annotations["traefik.ingress.kubernetes.io/router.tls.passthrough"] = "true"
+		"traefik.ingress.kubernetes.io/router.tls":         "true",
+		"cert-manager.io/cluster-issuer":                   "letsencrypt-prod",
 	}
 
 	return &networkingv1.Ingress{
@@ -449,6 +524,23 @@ func applyManagedIngress(ctx context.Context, client *kubernetes.Client, ingress
 	_, err := client.Clientset.NetworkingV1().Ingresses(ingress.Namespace).Create(ctx, ingress, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
 		_, err = client.Clientset.NetworkingV1().Ingresses(ingress.Namespace).Update(ctx, ingress, metav1.UpdateOptions{})
+	}
+	return err
+}
+
+func applyTCPIngressRoute(ctx context.Context, client *kubernetes.Client, tcpRoute *unstructured.Unstructured) error {
+	// Use dynamic client for custom resources
+	gvr := schema.GroupVersionResource{
+		Group:    "traefik.io",
+		Version:  "v1alpha1",
+		Resource: "ingressroutetcps",
+	}
+
+	dynamicClient := client.DynamicClient.Resource(gvr).Namespace(tcpRoute.GetNamespace())
+	
+	_, err := dynamicClient.Create(ctx, tcpRoute, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		_, err = dynamicClient.Update(ctx, tcpRoute, metav1.UpdateOptions{})
 	}
 	return err
 }

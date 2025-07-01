@@ -199,6 +199,14 @@ func GetManagedServiceType(managedType string) string {
 	return "Deployment"
 }
 
+// getExternalPortForService returns the correct external port for a service config
+func getExternalPortForService(config ServiceExposureConfig) int {
+	if config.IsHTTP {
+		return 443 // HTTPS port for HTTP services
+	}
+	return config.Port // Original port for TCP services via dedicated entrypoints
+}
+
 // GenerateManagedServiceEnvVars creates comprehensive environment variables for managed service
 func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 	envVars := make(models.EnvVars)
@@ -216,6 +224,7 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 	// Generate URLs for all exposed services
 	for _, config := range exposureConfigs {
 		externalHost := GetManagedServiceExternalDomain(service, config.Name)
+		externalPort := getExternalPortForService(config)
 		
 		if config.Name == "primary" {
 			// Primary service gets main variables
@@ -223,7 +232,7 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 				envVars["SERVICE_EXTERNAL_URL"] = fmt.Sprintf("https://%s", externalHost)
 			} else {
 				envVars["SERVICE_EXTERNAL_HOST"] = externalHost
-				envVars["SERVICE_EXTERNAL_PORT"] = "443"
+				envVars["SERVICE_EXTERNAL_PORT"] = fmt.Sprintf("%d", externalPort)
 			}
 		} else {
 			// Secondary services get prefixed variables
@@ -232,7 +241,7 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 				envVars[fmt.Sprintf("%s_EXTERNAL_URL", prefix)] = fmt.Sprintf("https://%s", externalHost)
 			} else {
 				envVars[fmt.Sprintf("%s_EXTERNAL_HOST", prefix)] = externalHost
-				envVars[fmt.Sprintf("%s_EXTERNAL_PORT", prefix)] = "443"
+				envVars[fmt.Sprintf("%s_EXTERNAL_PORT", prefix)] = fmt.Sprintf("%d", externalPort)
 			}
 			
 			// Internal URLs
@@ -254,9 +263,9 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["POSTGRES_USER"] = dbUser
 		envVars["POSTGRES_PASSWORD"] = dbPassword
 		
-		// Connection strings
+		// Connection strings - use original port for TCP routing via dedicated entrypoints
 		envVars["DATABASE_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:443/%s", dbUser, dbPassword, externalHost, dbName)
+		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 5432, dbName)
 		
 	case "mysql":
 		dbName := GenerateSecureID("db")
@@ -269,9 +278,9 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["MYSQL_PASSWORD"] = dbPassword
 		envVars["MYSQL_ROOT_PASSWORD"] = GenerateSecurePassword(20)
 		
-		// Connection strings
+		// Connection strings - use original port for TCP routing via dedicated entrypoints
 		envVars["DATABASE_URL"] = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("mysql://%s:%s@%s:443/%s", dbUser, dbPassword, externalHost, dbName)
+		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 3306, dbName)
 		
 	case "redis":
 		redisPassword := GenerateSecurePassword(16)
@@ -279,9 +288,9 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		
 		envVars["REDIS_PASSWORD"] = redisPassword
 		
-		// Connection strings
+		// Connection strings - use original port for TCP routing via dedicated entrypoints
 		envVars["REDIS_URL"] = fmt.Sprintf("redis://:%s@%s:%d", redisPassword, internalHost, service.Port)
-		envVars["REDIS_EXTERNAL_URL"] = fmt.Sprintf("redis://:%s@%s:443", redisPassword, externalHost)
+		envVars["REDIS_EXTERNAL_URL"] = fmt.Sprintf("redis://:%s@%s:%d", redisPassword, externalHost, 6379)
 		
 	case "mongodb":
 		dbName := GenerateSecureID("db")
@@ -293,9 +302,9 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["MONGO_INITDB_ROOT_USERNAME"] = dbUser
 		envVars["MONGO_INITDB_ROOT_PASSWORD"] = dbPassword
 		
-		// Connection strings
+		// Connection strings - use original port for TCP routing via dedicated entrypoints
 		envVars["MONGODB_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["MONGODB_EXTERNAL_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:443/%s", dbUser, dbPassword, externalHost, dbName)
+		envVars["MONGODB_EXTERNAL_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 27017, dbName)
 		
 	case "minio":
 		accessKey := GenerateSecureID("access")
@@ -315,7 +324,7 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["MINIO_ACCESS_KEY"] = accessKey
 		envVars["MINIO_SECRET_KEY"] = secretKey
 		
-		// S3 API and Console URLs
+		// S3 API and Console URLs - MinIO API and Console are HTTP services
 		envVars["S3_API_URL"] = fmt.Sprintf("https://%s", apiHost)
 		envVars["MINIO_CONSOLE_URL"] = fmt.Sprintf("https://%s", consoleHost)
 		
@@ -330,11 +339,11 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		amqpHost := GetManagedServiceExternalDomain(service, "primary")
 		mgmtHost := GetManagedServiceExternalDomain(service, "management")
 		
-		// AMQP Connection strings
+		// AMQP Connection strings - use original port for TCP routing via dedicated entrypoints
 		envVars["RABBITMQ_URL"] = fmt.Sprintf("amqp://%s:%s@%s:%d", username, password, internalHost, service.Port)
-		envVars["RABBITMQ_EXTERNAL_URL"] = fmt.Sprintf("amqp://%s:%s@%s:443", username, password, amqpHost)
+		envVars["RABBITMQ_EXTERNAL_URL"] = fmt.Sprintf("amqp://%s:%s@%s:%d", username, password, amqpHost, 5672)
 		
-		// Management UI
+		// Management UI - HTTP service uses HTTPS
 		envVars["RABBITMQ_MANAGEMENT_URL"] = fmt.Sprintf("https://%s", mgmtHost)
 	}
 	
@@ -395,12 +404,15 @@ func GetManagedServiceConnectionInfo(service models.Service) map[string]interfac
 		endpoint["description"] = config.Description
 		endpoint["port"] = fmt.Sprintf("%d", config.Port)
 		endpoint["protocol"] = "TCP"
+		
+		externalPort := getExternalPortForService(config)
+		
 		if config.IsHTTP {
 			endpoint["protocol"] = "HTTP"
 			endpoint["external_url"] = fmt.Sprintf("https://%s", GetManagedServiceExternalDomain(service, config.Name))
 		} else {
 			endpoint["external_host"] = GetManagedServiceExternalDomain(service, config.Name)
-			endpoint["external_port"] = "443"
+			endpoint["external_port"] = fmt.Sprintf("%d", externalPort)
 		}
 		
 		// Internal connection
@@ -441,6 +453,9 @@ func extractCredentialsFromEnvVars(envVars models.EnvVars, managedType string) m
 		if url, exists := envVars["DATABASE_URL"]; exists {
 			credentials["connection_string"] = url
 		}
+		if externalUrl, exists := envVars["DATABASE_EXTERNAL_URL"]; exists {
+			credentials["external_connection_string"] = externalUrl
+		}
 		
 	case "mysql":
 		if user, exists := envVars["MYSQL_USER"]; exists {
@@ -455,6 +470,9 @@ func extractCredentialsFromEnvVars(envVars models.EnvVars, managedType string) m
 		if url, exists := envVars["DATABASE_URL"]; exists {
 			credentials["connection_string"] = url
 		}
+		if externalUrl, exists := envVars["DATABASE_EXTERNAL_URL"]; exists {
+			credentials["external_connection_string"] = externalUrl
+		}
 		
 	case "redis":
 		if pass, exists := envVars["REDIS_PASSWORD"]; exists {
@@ -462,6 +480,9 @@ func extractCredentialsFromEnvVars(envVars models.EnvVars, managedType string) m
 		}
 		if url, exists := envVars["REDIS_URL"]; exists {
 			credentials["connection_string"] = url
+		}
+		if externalUrl, exists := envVars["REDIS_EXTERNAL_URL"]; exists {
+			credentials["external_connection_string"] = externalUrl
 		}
 		
 	case "mongodb":
@@ -476,6 +497,9 @@ func extractCredentialsFromEnvVars(envVars models.EnvVars, managedType string) m
 		}
 		if url, exists := envVars["MONGODB_URL"]; exists {
 			credentials["connection_string"] = url
+		}
+		if externalUrl, exists := envVars["MONGODB_EXTERNAL_URL"]; exists {
+			credentials["external_connection_string"] = externalUrl
 		}
 		
 	case "minio":
@@ -498,6 +522,9 @@ func extractCredentialsFromEnvVars(envVars models.EnvVars, managedType string) m
 		}
 		if url, exists := envVars["RABBITMQ_URL"]; exists {
 			credentials["connection_string"] = url
+		}
+		if externalUrl, exists := envVars["RABBITMQ_EXTERNAL_URL"]; exists {
+			credentials["external_connection_string"] = externalUrl
 		}
 	}
 	

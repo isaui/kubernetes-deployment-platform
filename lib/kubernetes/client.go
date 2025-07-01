@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -19,6 +20,7 @@ type ProxyOptions struct {
 type Client struct {
 	Clientset     *kubernetes.Clientset
 	MetricsClient *metricsv1beta1.Clientset
+	DynamicClient dynamic.Interface
 }
 
 // NewClient creates a new Kubernetes client using the proxy address from env or default
@@ -64,9 +66,17 @@ func NewClientWithOptions(options ProxyOptions) (*Client, error) {
 		fmt.Printf("Warning: Unable to create metrics client: %v\n", err)
 	}
 
+	// Create dynamic client for custom resources
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		// If dynamic client fails, return error as it's needed for custom resources
+		return nil, fmt.Errorf("failed to create dynamic client: %v", err)
+	}
+
 	return &Client{
 		Clientset:     clientset,
 		MetricsClient: metricsClient,
+		DynamicClient: dynamicClient,
 	}, nil
 }
 

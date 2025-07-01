@@ -169,7 +169,7 @@ func CreatePVC(ctx context.Context, registry models.Registry, registryNamespace 
 	
 	// Add storage request - 5Gi
 	pvc.Spec.Resources.Requests = make(corev1.ResourceList)
-	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("5Gi")
+	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("20Gi")
 	
 	_, err := clientset.CoreV1().PersistentVolumeClaims(registryNamespace).Create(ctx, pvc, metav1.CreateOptions{})
 	return err

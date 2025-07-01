@@ -16,7 +16,9 @@ func AuthMiddleware() gin.HandlerFunc {
 		   c.Request.URL.Path == "/api/v1/health" || 
 		   c.Request.URL.Path == "/api/v1/auth/login" ||
 		   c.Request.URL.Path == "/api/v1/auth/register" ||
-		   c.Request.URL.Path == "/api/v1/auth/logout" {
+		   c.Request.URL.Path == "/api/v1/auth/logout" ||
+		   c.Request.URL.Path == "/api/v1/auth/refresh" ||
+		   strings.HasPrefix(c.Request.URL.Path, "/api/v1/deployments") {
 			c.Next()
 			return
 		}
