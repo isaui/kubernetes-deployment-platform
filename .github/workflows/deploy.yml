@@ -2,7 +2,7 @@ name: Deploy to Kubesa
 
 on:
   push:
-    branches: [ main ]
+    branches: [ maisn ]
 
 jobs:
   build-and-deploy:
