@@ -26,16 +26,16 @@ func DeleteKubernetesResources(service models.Service) error {
 	ctx := context.Background()
 
 	// Delete resources in reverse order for proper cleanup
-	// Order: HPA -> All Ingresses & TCP Routes -> All Services -> Deployment/StatefulSet -> PVCs
+	// Order: HPA -> All Ingresses & VirtualServices -> All Services -> Deployment/StatefulSet -> PVCs
 
 	// Delete HPA if exists (both git and managed services may have HPA)
 	if err := deleteHPAData(ctx, k8sClient, service); err != nil {
 		log.Printf("Warning: Failed to delete HPA: %v", err)
 	}
 
-	// Delete all Ingresses and TCP Routes (managed services may have multiple)
-	if err := deleteAllIngressesAndTCPRoutes(ctx, k8sClient, service); err != nil {
-		log.Printf("Warning: Failed to delete all Ingresses and TCP Routes: %v", err)
+	// Delete all Ingresses and VirtualServices (managed services may have multiple)
+	if err := deleteAllIngressesAndVirtualServices(ctx, k8sClient, service); err != nil {
+		log.Printf("Warning: Failed to delete all Ingresses and VirtualServices: %v", err)
 	}
 
 	// Delete all Services (managed services may have multiple)
@@ -79,12 +79,12 @@ func deleteHPAData(ctx context.Context, k8sClient *kubernetes.Client, service mo
 	return nil
 }
 
-// deleteAllIngressesAndTCPRoutes deletes all ingresses and TCP routes for a service
-func deleteAllIngressesAndTCPRoutes(ctx context.Context, k8sClient *kubernetes.Client, service models.Service) error {
+// deleteAllIngressesAndVirtualServices deletes all ingresses and virtual services for a service
+func deleteAllIngressesAndVirtualServices(ctx context.Context, k8sClient *kubernetes.Client, service models.Service) error {
 	resourceName := GetResourceName(service)
 	
 	if service.Type == models.ServiceTypeManaged {
-		// Delete all ingresses and TCP routes for managed service based on exposure config
+		// Delete all ingresses and virtual services for managed service based on exposure config
 		exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 		
 		for _, config := range exposureConfigs {
@@ -102,11 +102,11 @@ func deleteAllIngressesAndTCPRoutes(ctx context.Context, k8sClient *kubernetes.C
 					log.Printf("HTTP Ingress %s deleted successfully", routeName)
 				}
 			} else {
-				// Delete TCP IngressRoute
-				if err := deleteTCPIngressRoute(ctx, k8sClient, service.EnvironmentID, routeName); err != nil {
-					log.Printf("Warning: Failed to delete TCP IngressRoute %s: %v", routeName, err)
+				// Delete Istio VirtualService
+				if err := deleteVirtualService(ctx, k8sClient, service.EnvironmentID, routeName); err != nil {
+					log.Printf("Warning: Failed to delete VirtualService %s: %v", routeName, err)
 				} else {
-					log.Printf("TCP IngressRoute %s deleted successfully", routeName)
+					log.Printf("VirtualService %s deleted successfully", routeName)
 				}
 			}
 		}
@@ -124,12 +124,12 @@ func deleteAllIngressesAndTCPRoutes(ctx context.Context, k8sClient *kubernetes.C
 	return nil
 }
 
-// deleteTCPIngressRoute deletes Traefik IngressRouteTCP
-func deleteTCPIngressRoute(ctx context.Context, k8sClient *kubernetes.Client, namespace, name string) error {
+// deleteVirtualService deletes Istio VirtualService
+func deleteVirtualService(ctx context.Context, k8sClient *kubernetes.Client, namespace, name string) error {
 	gvr := schema.GroupVersionResource{
-		Group:    "traefik.io",
-		Version:  "v1alpha1",
-		Resource: "ingressroutetcps",
+		Group:    "networking.istio.io",
+		Version:  "v1alpha3",
+		Resource: "virtualservices",
 	}
 
 	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
@@ -293,9 +293,9 @@ func DeleteAllResourcesInNamespace(environmentID string) error {
 		deletionErrors = append(deletionErrors, fmt.Sprintf("HPAs: %v", err))
 	}
 	
-	// Delete all TCP IngressRoutes
-	if err := deleteAllTCPIngressRoutesInNamespace(ctx, k8sClient, environmentID); err != nil {
-		deletionErrors = append(deletionErrors, fmt.Sprintf("TCP IngressRoutes: %v", err))
+	// Delete all VirtualServices
+	if err := deleteAllVirtualServicesInNamespace(ctx, k8sClient, environmentID); err != nil {
+		deletionErrors = append(deletionErrors, fmt.Sprintf("VirtualServices: %v", err))
 	}
 	
 	// Delete all Ingresses
@@ -336,11 +336,11 @@ func deleteAllHPAsInNamespace(ctx context.Context, k8sClient *kubernetes.Client,
 	return k8sClient.Clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{})
 }
 
-func deleteAllTCPIngressRoutesInNamespace(ctx context.Context, k8sClient *kubernetes.Client, namespace string) error {
+func deleteAllVirtualServicesInNamespace(ctx context.Context, k8sClient *kubernetes.Client, namespace string) error {
 	gvr := schema.GroupVersionResource{
-		Group:    "traefik.io",
-		Version:  "v1alpha1",
-		Resource: "ingressroutetcps",
+		Group:    "networking.istio.io",
+		Version:  "v1alpha3",
+		Resource: "virtualservices",
 	}
 
 	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
@@ -416,8 +416,8 @@ func CleanupOrphanedResources(environmentID string, activeServices []models.Serv
 	log.Printf("Expected resources: %v", expectedResourceNames)
 	
 	// Find and delete orphaned resources
-	if err := cleanupOrphanedTCPIngressRoutes(ctx, k8sClient, environmentID, expectedResourceNames); err != nil {
-		log.Printf("Warning: Failed to cleanup orphaned TCP IngressRoutes: %v", err)
+	if err := cleanupOrphanedVirtualServices(ctx, k8sClient, environmentID, expectedResourceNames); err != nil {
+		log.Printf("Warning: Failed to cleanup orphaned VirtualServices: %v", err)
 	}
 	
 	if err := cleanupOrphanedIngresses(ctx, k8sClient, environmentID, expectedResourceNames); err != nil {
@@ -440,26 +440,26 @@ func CleanupOrphanedResources(environmentID string, activeServices []models.Serv
 	return nil
 }
 
-func cleanupOrphanedTCPIngressRoutes(ctx context.Context, k8sClient *kubernetes.Client, namespace string, expected map[string]bool) error {
+func cleanupOrphanedVirtualServices(ctx context.Context, k8sClient *kubernetes.Client, namespace string, expected map[string]bool) error {
 	gvr := schema.GroupVersionResource{
-		Group:    "traefik.io",
-		Version:  "v1alpha1",
-		Resource: "ingressroutetcps",
+		Group:    "networking.istio.io",
+		Version:  "v1alpha3",
+		Resource: "virtualservices",
 	}
 
 	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
 	
-	tcpRoutes, err := dynamicClient.List(ctx, metav1.ListOptions{})
+	virtualServices, err := dynamicClient.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 	
-	for _, route := range tcpRoutes.Items {
-		if !expected[route.GetName()] {
-			log.Printf("Deleting orphaned TCP IngressRoute: %s", route.GetName())
-			err := dynamicClient.Delete(ctx, route.GetName(), metav1.DeleteOptions{})
+	for _, vs := range virtualServices.Items {
+		if !expected[vs.GetName()] {
+			log.Printf("Deleting orphaned VirtualService: %s", vs.GetName())
+			err := dynamicClient.Delete(ctx, vs.GetName(), metav1.DeleteOptions{})
 			if err != nil {
-				log.Printf("Warning: Failed to delete orphaned TCP IngressRoute %s: %v", route.GetName(), err)
+				log.Printf("Warning: Failed to delete orphaned VirtualService %s: %v", vs.GetName(), err)
 			}
 		}
 	}

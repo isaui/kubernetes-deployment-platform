@@ -21,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with full exposure
+// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with Istio VirtualService
 func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, error) {
 	service.Status = "building"
 	
@@ -61,13 +61,13 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 		}
 	}
 
-	// Deploy all services and ingresses for complete exposure
+	// Deploy all services and virtual services for complete exposure
 	if err := deployAllManagedServices(ctx, k8sClient, service); err != nil {
 		deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
 	}
 
-	if err := deployAllManagedIngresses(ctx, k8sClient, service); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingresses: %v", err))
+	if err := deployAllManagedVirtualServices(ctx, k8sClient, service); err != nil {
+		deploymentErrors = append(deploymentErrors, fmt.Sprintf("virtualservices: %v", err))
 	}
 
 	if len(deploymentErrors) > 0 {
@@ -78,7 +78,7 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 	service.Domain = GetManagedServiceExternalDomain(service)
 	service.Status = "running"
 	
-	log.Printf("Successfully deployed managed service: %s (%s) with full exposure", service.Name, service.ManagedType)
+	log.Printf("Successfully deployed managed service: %s (%s) with Istio VirtualService", service.Name, service.ManagedType)
 	return &service, nil
 }
 
@@ -95,8 +95,8 @@ func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, se
 	return nil
 }
 
-// deployAllManagedIngresses creates all required ingresses/tcp routes for external access
-func deployAllManagedIngresses(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+// deployAllManagedVirtualServices creates all required VirtualServices for external access
+func deployAllManagedVirtualServices(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
 	for _, config := range serviceConfigs {
@@ -108,54 +108,66 @@ func deployAllManagedIngresses(ctx context.Context, client *kubernetes.Client, s
 			}
 			log.Printf("Created HTTP Ingress for %s (%s)", service.Name, config.Name)
 		} else {
-			// Create TCP IngressRoute for database services (PostgreSQL, MySQL, Redis, MongoDB, RabbitMQ AMQP)
-			tcpRoute := createTCPIngressRouteSpec(service, config)
-			if err := applyTCPIngressRoute(ctx, client, tcpRoute); err != nil {
-				return fmt.Errorf("tcp ingress route %s: %v", config.Name, err)
+			// Create Istio VirtualService for TCP services
+			virtualService := createManagedVirtualServiceSpec(service, config)
+			if err := applyVirtualService(ctx, client, virtualService); err != nil {
+				return fmt.Errorf("virtualservice %s: %v", config.Name, err)
 			}
-			log.Printf("Created TCP IngressRoute for %s (%s)", service.Name, config.Name)
+			log.Printf("Created VirtualService for %s (%s)", service.Name, config.Name)
 		}
 	}
 	return nil
 }
 
-// createTCPIngressRouteSpec creates Traefik IngressRouteTCP for database services
-func createTCPIngressRouteSpec(service models.Service, config ServiceExposureConfig) *unstructured.Unstructured {
+// createManagedVirtualServiceSpec creates Istio VirtualService for TCP services
+func createManagedVirtualServiceSpec(service models.Service, config ServiceExposureConfig) *unstructured.Unstructured {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	routeName := resourceName
+	vsName := resourceName
 	serviceName := resourceName
 	
-	// Add suffix for secondary routes
+	// Add suffix for secondary virtual services
 	if config.Name != "primary" {
-		routeName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+		vsName = fmt.Sprintf("%s-%s", resourceName, config.Name)
 		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
 	}
 
+	// Generate external domain for this service endpoint
+	externalDomain := GetManagedServiceExternalDomain(service, config.Name)
 	
-	
-	// Get appropriate entrypoint based on service type
-	entryPoint := getTCPEntryPoint(service.ManagedType, config.Name)
+	// Generate internal service DNS name
+	internalServiceHost := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, service.EnvironmentID)
 
-	// Create IngressRouteTCP spec
-	tcpRoute := &unstructured.Unstructured{
+	// Create VirtualService spec
+	virtualService := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "traefik.io/v1alpha1",
-			"kind":       "IngressRouteTCP",
+			"apiVersion": "networking.istio.io/v1alpha3",
+			"kind":       "VirtualService",
 			"metadata": map[string]interface{}{
-				"name":      routeName,
+				"name":      vsName,
 				"namespace": service.EnvironmentID,
 				"labels":    labels,
 			},
 			"spec": map[string]interface{}{
-				"entryPoints": []interface{}{entryPoint},
-				"routes": []interface{}{
+				"hosts": []interface{}{externalDomain},
+				"gateways": []interface{}{
+					"istio-system/managed-services-gateway",
+				},
+				"tcp": []interface{}{
 					map[string]interface{}{
-						"match": "HostSNI(`*`)",  // Accept all traffic on this entrypoint
-						"services": []interface{}{
+						"match": []interface{}{
 							map[string]interface{}{
-								"name": serviceName,
 								"port": config.Port,
+							},
+						},
+						"route": []interface{}{
+							map[string]interface{}{
+								"destination": map[string]interface{}{
+									"host": internalServiceHost,
+									"port": map[string]interface{}{
+										"number": config.Port,
+									},
+								},
 							},
 						},
 					},
@@ -164,28 +176,7 @@ func createTCPIngressRouteSpec(service models.Service, config ServiceExposureCon
 		},
 	}
 
-	return tcpRoute
-}
-
-// getTCPEntryPoint returns the appropriate Traefik entrypoint for each service type
-func getTCPEntryPoint(managedType, configName string) string {
-	switch managedType {
-	case "postgresql":
-		return "postgresql"  // port 5432
-	case "mysql":
-		return "mysql"       // port 3306
-	case "redis":
-		return "redis"       // port 6379
-	case "mongodb":
-		return "mongodb"     // port 27017
-	case "rabbitmq":
-		if configName == "primary" {
-			return "rabbitmq"  // port 5672 for AMQP
-		}
-		return "websecure"   // port 443 for management UI (HTTP)
-	default:
-		return "websecure"   // fallback for unknown services
-	}
+	return virtualService
 }
 
 // createStatefulSetSpec creates StatefulSet with all required ports
@@ -528,19 +519,19 @@ func applyManagedIngress(ctx context.Context, client *kubernetes.Client, ingress
 	return err
 }
 
-func applyTCPIngressRoute(ctx context.Context, client *kubernetes.Client, tcpRoute *unstructured.Unstructured) error {
-	// Use dynamic client for custom resources
+func applyVirtualService(ctx context.Context, client *kubernetes.Client, virtualService *unstructured.Unstructured) error {
+	// Use dynamic client for Istio VirtualService
 	gvr := schema.GroupVersionResource{
-		Group:    "traefik.io",
-		Version:  "v1alpha1",
-		Resource: "ingressroutetcps",
+		Group:    "networking.istio.io",
+		Version:  "v1alpha3",
+		Resource: "virtualservices",
 	}
 
-	dynamicClient := client.DynamicClient.Resource(gvr).Namespace(tcpRoute.GetNamespace())
+	dynamicClient := client.DynamicClient.Resource(gvr).Namespace(virtualService.GetNamespace())
 	
-	_, err := dynamicClient.Create(ctx, tcpRoute, metav1.CreateOptions{})
+	_, err := dynamicClient.Create(ctx, virtualService, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		_, err = dynamicClient.Update(ctx, tcpRoute, metav1.UpdateOptions{})
+		_, err = dynamicClient.Update(ctx, virtualService, metav1.UpdateOptions{})
 	}
 	return err
 }
@@ -586,3 +577,4 @@ func getManagedServiceDataPath(managedType string) string {
 	}
 	return "/data"
 }
+
