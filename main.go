@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -31,8 +32,11 @@ func main() {
 		corsAllowed = "http://localhost:5173" // Default value if not set
 	}
 
+	// Split by comma and trim spaces
+	allowedOrigins := strings.Split(strings.ReplaceAll(corsAllowed, " ", ""), ",")
+
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{corsAllowed},
+		AllowOrigins:     allowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		AllowCredentials: true,

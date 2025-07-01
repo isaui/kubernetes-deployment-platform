@@ -1,0 +1,27 @@
+name: Deploy to Kubesa
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Deploy to Kubesa
+        run: |
+          echo "Triggering deployment..."          
+          curl -X POST http://localhost:8080/api/v1/deployments/git \
+            -H "Content-Type: application/json" \
+            -d '{
+              "serviceId": "d921128b-3e73-49ae-9425-9d4a8cdfbb37",
+              "apiKey": "${{ secrets.KUBESA_API_KEY }}",
+              "commitId": "${{ github.sha }}",
+              "commitMessage": "${{ github.event.head_commit.message }}"
+            }'
+          
+          echo "Deployment initiated. Check deployment status and logs in the Kubesa web interface."
