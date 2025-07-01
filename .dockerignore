@@ -10,7 +10,6 @@ app
 
 # Go build cache
 .cache/
-go.sum
 
 # Vendor (if using)
 vendor/
