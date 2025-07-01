@@ -184,6 +184,12 @@ func (s *GitService) UpdateGitService(newService models.Service, userID string, 
 		log.Println(updatedService.EnvVars)
 	}
 
+	// Update service in the database
+	errUpdate := s.serviceRepo.Update(updatedService)
+	if errUpdate != nil {
+		return newService, errUpdate
+	}
+
 	// Trigger redeployment for git services
 	deployment, errDeployment := s.deploymentRepo.GetLatestDeployment(updatedService.ID)
 	if errDeployment == nil {
