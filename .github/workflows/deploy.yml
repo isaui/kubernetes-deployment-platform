@@ -15,7 +15,7 @@ jobs:
       - name: Deploy to Kubesa
         run: |
           echo "Triggering deployment..."          
-          curl -X POST http://localhost:8080/api/v1/deployments/git \
+          curl -X POST https://kubernetes-deployment-platform-main.52bda5.app.isacitra.com/api/v1/deployments/git \
             -H "Content-Type: application/json" \
             -d '{
               "serviceId": "d921128b-3e73-49ae-9425-9d4a8cdfbb37",
