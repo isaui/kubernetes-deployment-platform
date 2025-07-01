@@ -185,26 +185,22 @@ func (s *GitService) UpdateGitService(newService models.Service, userID string, 
 	}
 
 	// Trigger redeployment for git services
-	deployment, err := s.deploymentRepo.GetLatestDeployment(updatedService.ID)
-	if err != nil {
-		return newService, err
+	deployment, errDeployment := s.deploymentRepo.GetLatestDeployment(updatedService.ID)
+	if errDeployment == nil {
+		updatedService.Status = "building"
+		// Update the service in the database
+		errUpdate := s.serviceRepo.Update(updatedService)
+		if errUpdate != nil {
+			return newService, errUpdate
+		}
+		
+		go s.deploymentService.CreateGitDeployment(dto.GitDeployRequest{
+			ServiceID:     updatedService.ID,
+			APIKey:        updatedService.APIKey,
+			CommitID:      deployment.CommitSHA,
+			CommitMessage: deployment.CommitMessage,
+		})
 	}
-	updatedService.Status = "building"
-	// Update the service in the database
-	err = s.serviceRepo.Update(updatedService)
-	if err != nil {
-		return newService, err
-	}
-	
-	go s.deploymentService.CreateGitDeployment(dto.GitDeployRequest{
-		ServiceID:     updatedService.ID,
-		APIKey:        updatedService.APIKey,
-		CommitID:      deployment.CommitSHA,
-		CommitMessage: deployment.CommitMessage,
-	})
-	
-	
-	
 	// Fetch the updated service with its relationships
 	return s.serviceRepo.FindByID(newService.ID)
 }
