@@ -260,7 +260,7 @@ func createIngressSpec(service models.Service) *networkingv1.Ingress {
 			Annotations: map[string]string{
 				// Traefik configuration
 				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-				"traefik.ingress.kubernetes.io/router.tls":         "true",
+				"traefik.ingress.kubernetes.io/router.tls": "true",
 				
 				// Cert-manager configuration
 				"cert-manager.io/cluster-issuer": "letsencrypt-prod",

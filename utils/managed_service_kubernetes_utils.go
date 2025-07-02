@@ -372,7 +372,7 @@ func createManagedServiceSpec(service models.Service, config ServiceExposureConf
 			Ports: []corev1.ServicePort{
 				{
 					Port:       int32(config.Port),
-					TargetPort: intstr.FromString(config.Name),
+					TargetPort: intstr.FromInt(config.Port),
 					Protocol:   corev1.ProtocolTCP,
 					Name:       config.Name,
 				},
