@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/pendeploy-simple/models"
@@ -332,9 +333,10 @@ func (s *ManagedServiceService) setManagedServiceDefaults(service models.Service
 // deployManagedServiceToKubernetes deploys the managed service to Kubernetes
 func (s *ManagedServiceService) deployManagedServiceToKubernetes(service models.Service) (*models.Service, error) {
 	log.Printf("Deploying managed service %s (%s) to Kubernetes", service.Name, service.ManagedType)
+	serverIP := os.Getenv("SERVER_IP")
 	
 	// Use the Kubernetes deployment utility
-	deployedService, err := utils.DeployManagedServiceToKubernetes(service)
+	deployedService, err := utils.DeployManagedServiceToKubernetes(service, serverIP)
 	if err != nil {
 		return deployedService, err
 	}

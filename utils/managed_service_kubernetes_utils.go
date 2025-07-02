@@ -17,12 +17,10 @@ import (
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with Istio VirtualService
-func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, error) {
+// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with NodePort for TCP services
+func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (*models.Service, error) {
 	service.Status = "building"
 	
 	k8sClient, err := kubernetes.NewClient()
@@ -38,9 +36,16 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 		return &service, fmt.Errorf("failed to ensure namespace: %v", err)
 	}
 
-	// Set port and env vars using enhanced utils
+	// Allocate NodePort for primary TCP service
+	nodePort, err := AllocateNodePort(service.ManagedType, serverIP)
+	if err != nil {
+		service.Status = "failed"
+		return &service, fmt.Errorf("failed to allocate NodePort: %v", err)
+	}
+
+	// Set port and env vars using enhanced utils with NodePort
 	service.Port = GetManagedServicePort(service.ManagedType)
-	service.EnvVars = GenerateManagedServiceEnvVars(service)
+	service.EnvVars = GenerateManagedServiceEnvVars(service, serverIP, nodePort)
 	
 	var deploymentErrors []string
 
@@ -61,13 +66,14 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 		}
 	}
 
-	// Deploy all services and virtual services for complete exposure
-	if err := deployAllManagedServices(ctx, k8sClient, service); err != nil {
+	// Deploy all services (NodePort for TCP, ClusterIP for HTTP)
+	if err := deployAllManagedServices(ctx, k8sClient, service, nodePort); err != nil {
 		deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
 	}
 
-	if err := deployAllManagedVirtualServices(ctx, k8sClient, service); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("virtualservices: %v", err))
+	// Deploy ingresses only for HTTP services
+	if err := deployManagedIngresses(ctx, k8sClient, service); err != nil {
+		deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingresses: %v", err))
 	}
 
 	if len(deploymentErrors) > 0 {
@@ -75,19 +81,32 @@ func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, 
 		return &service, fmt.Errorf("deployment failed: %s", strings.Join(deploymentErrors, "; "))
 	}
 
-	service.Domain = GetManagedServiceExternalDomain(service)
+	// Set external connection info
+	service.Domain = fmt.Sprintf("%s:%d", serverIP, nodePort) // For primary TCP service
 	service.Status = "running"
 	
-	log.Printf("Successfully deployed managed service: %s (%s) with Istio VirtualService", service.Name, service.ManagedType)
+	log.Printf("Successfully deployed managed service: %s (%s) with NodePort %d", service.Name, service.ManagedType, nodePort)
 	return &service, nil
 }
 
-// deployAllManagedServices creates all required services for a managed service
-func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+// deployAllManagedServices creates all required services with appropriate exposure
+func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service, primaryNodePort int) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
 	for _, config := range serviceConfigs {
-		k8sService := createManagedServiceSpec(service, config)
+		var k8sService *corev1.Service
+		
+		if config.ExposureType == "NodePort" && config.Name == "primary" {
+			// Primary TCP service gets allocated NodePort
+			k8sService = createNodePortServiceSpec(service, config, primaryNodePort)
+		} else if config.ExposureType == "NodePort" {
+			// Secondary TCP services would need separate port allocation (future)
+			k8sService = createClusterIPServiceSpec(service, config)
+		} else {
+			// HTTP services get ClusterIP for internal access (exposed via Ingress)
+			k8sService = createClusterIPServiceSpec(service, config)
+		}
+		
 		if err := applyManagedService(ctx, client, k8sService); err != nil {
 			return fmt.Errorf("service %s: %v", config.Name, err)
 		}
@@ -95,88 +114,86 @@ func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, se
 	return nil
 }
 
-// deployAllManagedVirtualServices creates all required VirtualServices for external access
-func deployAllManagedVirtualServices(ctx context.Context, client *kubernetes.Client, service models.Service) error {
+// deployManagedIngresses creates ingresses only for HTTP services
+func deployManagedIngresses(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
 	for _, config := range serviceConfigs {
-		if config.IsHTTP {
+		if config.IsHTTP && config.ExposureType == "Ingress" {
 			// Create HTTP Ingress for web services (MinIO console, RabbitMQ management)
 			ingress := createManagedIngressSpec(service, config)
 			if err := applyManagedIngress(ctx, client, ingress); err != nil {
 				return fmt.Errorf("http ingress %s: %v", config.Name, err)
 			}
 			log.Printf("Created HTTP Ingress for %s (%s)", service.Name, config.Name)
-		} else {
-			// Create Istio VirtualService for TCP services
-			virtualService := createManagedVirtualServiceSpec(service, config)
-			if err := applyVirtualService(ctx, client, virtualService); err != nil {
-				return fmt.Errorf("virtualservice %s: %v", config.Name, err)
-			}
-			log.Printf("Created VirtualService for %s (%s)", service.Name, config.Name)
 		}
 	}
 	return nil
 }
 
-// createManagedVirtualServiceSpec creates Istio VirtualService for TCP services
-func createManagedVirtualServiceSpec(service models.Service, config ServiceExposureConfig) *unstructured.Unstructured {
+// createNodePortServiceSpec creates NodePort Service for TCP services
+func createNodePortServiceSpec(service models.Service, config ServiceExposureConfig, nodePort int) *corev1.Service {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	vsName := resourceName
 	serviceName := resourceName
 	
-	// Add suffix for secondary virtual services
+	// Add suffix for secondary services
 	if config.Name != "primary" {
-		vsName = fmt.Sprintf("%s-%s", resourceName, config.Name)
 		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
 	}
 
-	// Generate external domain for this service endpoint
-	externalDomain := GetManagedServiceExternalDomain(service, config.Name)
-	
-	// Generate internal service DNS name
-	internalServiceHost := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, service.EnvironmentID)
-
-	// Create VirtualService spec
-	virtualService := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "networking.istio.io/v1alpha3",
-			"kind":       "VirtualService",
-			"metadata": map[string]interface{}{
-				"name":      vsName,
-				"namespace": service.EnvironmentID,
-				"labels":    labels,
-			},
-			"spec": map[string]interface{}{
-				"hosts": []interface{}{externalDomain},
-				"gateways": []interface{}{
-					"istio-system/managed-services-gateway",
-				},
-				"tcp": []interface{}{
-					map[string]interface{}{
-						"match": []interface{}{
-							map[string]interface{}{
-								"port": config.Port,
-							},
-						},
-						"route": []interface{}{
-							map[string]interface{}{
-								"destination": map[string]interface{}{
-									"host": internalServiceHost,
-									"port": map[string]interface{}{
-										"number": config.Port,
-									},
-								},
-							},
-						},
-					},
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: service.EnvironmentID,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: map[string]string{"app": resourceName},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       int32(config.Port),
+					TargetPort: intstr.FromInt(config.Port),
+					Protocol:   corev1.ProtocolTCP,
+					Name:       config.Name,
+					NodePort:   int32(nodePort),
 				},
 			},
 		},
 	}
+}
 
-	return virtualService
+// createClusterIPServiceSpec creates ClusterIP Service for internal/HTTP services
+func createClusterIPServiceSpec(service models.Service, config ServiceExposureConfig) *corev1.Service {
+	resourceName := GetResourceName(service)
+	labels := GetResourceLabels(service)
+	serviceName := resourceName
+	
+	// Add suffix for secondary services
+	if config.Name != "primary" {
+		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceName,
+			Namespace: service.EnvironmentID,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": resourceName},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       int32(config.Port),
+					TargetPort: intstr.FromInt(config.Port),
+					Protocol:   corev1.ProtocolTCP,
+					Name:       config.Name,
+				},
+			},
+		},
+	}
 }
 
 // createStatefulSetSpec creates StatefulSet with all required ports
@@ -350,38 +367,6 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 	return deployment
 }
 
-// createManagedServiceSpec creates Service specification for specific exposure config
-func createManagedServiceSpec(service models.Service, config ServiceExposureConfig) *corev1.Service {
-	resourceName := GetResourceName(service)
-	labels := GetResourceLabels(service)
-	serviceName := resourceName
-	
-	// Add suffix for secondary services
-	if config.Name != "primary" {
-		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
-	}
-
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: service.EnvironmentID,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": resourceName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:       int32(config.Port),
-					TargetPort: intstr.FromInt(config.Port),
-					Protocol:   corev1.ProtocolTCP,
-					Name:       config.Name,
-				},
-			},
-			Type: corev1.ServiceTypeClusterIP,
-		},
-	}
-}
-
 // createManagedIngressSpec creates Ingress specification for HTTP services only
 func createManagedIngressSpec(service models.Service, config ServiceExposureConfig) *networkingv1.Ingress {
 	resourceName := GetResourceName(service)
@@ -519,23 +504,6 @@ func applyManagedIngress(ctx context.Context, client *kubernetes.Client, ingress
 	return err
 }
 
-func applyVirtualService(ctx context.Context, client *kubernetes.Client, virtualService *unstructured.Unstructured) error {
-	// Use dynamic client for Istio VirtualService
-	gvr := schema.GroupVersionResource{
-		Group:    "networking.istio.io",
-		Version:  "v1alpha3",
-		Resource: "virtualservices",
-	}
-
-	dynamicClient := client.DynamicClient.Resource(gvr).Namespace(virtualService.GetNamespace())
-	
-	_, err := dynamicClient.Create(ctx, virtualService, metav1.CreateOptions{})
-	if errors.IsAlreadyExists(err) {
-		_, err = dynamicClient.Update(ctx, virtualService, metav1.UpdateOptions{})
-	}
-	return err
-}
-
 func applyPVC(ctx context.Context, client *kubernetes.Client, pvc *corev1.PersistentVolumeClaim) error {
 	_, err := client.Clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
@@ -577,4 +545,3 @@ func getManagedServiceDataPath(managedType string) string {
 	}
 	return "/data"
 }
-

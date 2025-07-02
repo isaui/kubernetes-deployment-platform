@@ -10,10 +10,9 @@ import (
 	"github.com/pendeploy-simple/models"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// DeleteKubernetesResources deletes all Kubernetes resources for the service with full managed service support
+// DeleteKubernetesResources deletes all Kubernetes resources for the service with NodePort managed service support
 func DeleteKubernetesResources(service models.Service) error {
 	// Create Kubernetes client
 	k8sClient, err := kubernetes.NewClient()
@@ -26,19 +25,19 @@ func DeleteKubernetesResources(service models.Service) error {
 	ctx := context.Background()
 
 	// Delete resources in reverse order for proper cleanup
-	// Order: HPA -> All Ingresses & VirtualServices -> All Services -> Deployment/StatefulSet -> PVCs
+	// Order: HPA -> All Ingresses -> All Services -> Deployment/StatefulSet -> PVCs
 
 	// Delete HPA if exists (both git and managed services may have HPA)
 	if err := deleteHPAData(ctx, k8sClient, service); err != nil {
 		log.Printf("Warning: Failed to delete HPA: %v", err)
 	}
 
-	// Delete all Ingresses and VirtualServices (managed services may have multiple)
-	if err := deleteAllIngressesAndVirtualServices(ctx, k8sClient, service); err != nil {
-		log.Printf("Warning: Failed to delete all Ingresses and VirtualServices: %v", err)
+	// Delete all Ingresses (only HTTP services have Ingresses now)
+	if err := deleteAllIngresses(ctx, k8sClient, service); err != nil {
+		log.Printf("Warning: Failed to delete all Ingresses: %v", err)
 	}
 
-	// Delete all Services (managed services may have multiple)
+	// Delete all Services (both NodePort and ClusterIP)
 	if err := deleteAllServices(ctx, k8sClient, service); err != nil {
 		return fmt.Errorf("failed to delete Services: %v", err)
 	}
@@ -79,34 +78,26 @@ func deleteHPAData(ctx context.Context, k8sClient *kubernetes.Client, service mo
 	return nil
 }
 
-// deleteAllIngressesAndVirtualServices deletes all ingresses and virtual services for a service
-func deleteAllIngressesAndVirtualServices(ctx context.Context, k8sClient *kubernetes.Client, service models.Service) error {
+// deleteAllIngresses deletes all ingresses for a service (only HTTP services)
+func deleteAllIngresses(ctx context.Context, k8sClient *kubernetes.Client, service models.Service) error {
 	resourceName := GetResourceName(service)
 	
 	if service.Type == models.ServiceTypeManaged {
-		// Delete all ingresses and virtual services for managed service based on exposure config
+		// Delete only HTTP ingresses for managed service based on exposure config
 		exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 		
 		for _, config := range exposureConfigs {
-			routeName := resourceName
-			if config.Name != "primary" {
-				routeName = fmt.Sprintf("%s-%s", resourceName, config.Name)
-			}
-			
-			if config.IsHTTP {
-				// Delete HTTP Ingress
-				err := k8sClient.Clientset.NetworkingV1().Ingresses(service.EnvironmentID).Delete(ctx, routeName, metav1.DeleteOptions{})
-				if err != nil && !errors.IsNotFound(err) {
-					log.Printf("Warning: Failed to delete HTTP Ingress %s: %v", routeName, err)
-				} else if err == nil {
-					log.Printf("HTTP Ingress %s deleted successfully", routeName)
+			if config.IsHTTP && config.ExposureType == "Ingress" {
+				ingressName := resourceName
+				if config.Name != "primary" {
+					ingressName = fmt.Sprintf("%s-%s", resourceName, config.Name)
 				}
-			} else {
-				// Delete Istio VirtualService
-				if err := deleteVirtualService(ctx, k8sClient, service.EnvironmentID, routeName); err != nil {
-					log.Printf("Warning: Failed to delete VirtualService %s: %v", routeName, err)
-				} else {
-					log.Printf("VirtualService %s deleted successfully", routeName)
+				
+				err := k8sClient.Clientset.NetworkingV1().Ingresses(service.EnvironmentID).Delete(ctx, ingressName, metav1.DeleteOptions{})
+				if err != nil && !errors.IsNotFound(err) {
+					log.Printf("Warning: Failed to delete HTTP Ingress %s: %v", ingressName, err)
+				} else if err == nil {
+					log.Printf("HTTP Ingress %s deleted successfully", ingressName)
 				}
 			}
 		}
@@ -124,25 +115,7 @@ func deleteAllIngressesAndVirtualServices(ctx context.Context, k8sClient *kubern
 	return nil
 }
 
-// deleteVirtualService deletes Istio VirtualService
-func deleteVirtualService(ctx context.Context, k8sClient *kubernetes.Client, namespace, name string) error {
-	gvr := schema.GroupVersionResource{
-		Group:    "networking.istio.io",
-		Version:  "v1alpha3",
-		Resource: "virtualservices",
-	}
-
-	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
-	
-	err := dynamicClient.Delete(ctx, name, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		return err
-	}
-	
-	return nil
-}
-
-// deleteAllServices deletes all services for a service (multiple for managed services)
+// deleteAllServices deletes all services for a service (multiple for managed services, including NodePort)
 func deleteAllServices(ctx context.Context, k8sClient *kubernetes.Client, service models.Service) error {
 	resourceName := GetResourceName(service)
 	
@@ -293,17 +266,12 @@ func DeleteAllResourcesInNamespace(environmentID string) error {
 		deletionErrors = append(deletionErrors, fmt.Sprintf("HPAs: %v", err))
 	}
 	
-	// Delete all VirtualServices
-	if err := deleteAllVirtualServicesInNamespace(ctx, k8sClient, environmentID); err != nil {
-		deletionErrors = append(deletionErrors, fmt.Sprintf("VirtualServices: %v", err))
-	}
-	
 	// Delete all Ingresses
 	if err := deleteAllIngressesInNamespace(ctx, k8sClient, environmentID); err != nil {
 		deletionErrors = append(deletionErrors, fmt.Sprintf("Ingresses: %v", err))
 	}
 	
-	// Delete all Services (except default kubernetes service)
+	// Delete all Services (including NodePort services)
 	if err := deleteAllServicesInNamespace(ctx, k8sClient, environmentID); err != nil {
 		deletionErrors = append(deletionErrors, fmt.Sprintf("Services: %v", err))
 	}
@@ -334,17 +302,6 @@ func DeleteAllResourcesInNamespace(environmentID string) error {
 // Helper functions for namespace-wide cleanup
 func deleteAllHPAsInNamespace(ctx context.Context, k8sClient *kubernetes.Client, namespace string) error {
 	return k8sClient.Clientset.AutoscalingV2().HorizontalPodAutoscalers(namespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{})
-}
-
-func deleteAllVirtualServicesInNamespace(ctx context.Context, k8sClient *kubernetes.Client, namespace string) error {
-	gvr := schema.GroupVersionResource{
-		Group:    "networking.istio.io",
-		Version:  "v1alpha3",
-		Resource: "virtualservices",
-	}
-
-	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
-	return dynamicClient.DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{})
 }
 
 func deleteAllIngressesInNamespace(ctx context.Context, k8sClient *kubernetes.Client, namespace string) error {
@@ -416,10 +373,6 @@ func CleanupOrphanedResources(environmentID string, activeServices []models.Serv
 	log.Printf("Expected resources: %v", expectedResourceNames)
 	
 	// Find and delete orphaned resources
-	if err := cleanupOrphanedVirtualServices(ctx, k8sClient, environmentID, expectedResourceNames); err != nil {
-		log.Printf("Warning: Failed to cleanup orphaned VirtualServices: %v", err)
-	}
-	
 	if err := cleanupOrphanedIngresses(ctx, k8sClient, environmentID, expectedResourceNames); err != nil {
 		log.Printf("Warning: Failed to cleanup orphaned Ingresses: %v", err)
 	}
@@ -437,33 +390,6 @@ func CleanupOrphanedResources(environmentID string, activeServices []models.Serv
 	}
 	
 	log.Printf("Orphaned resource cleanup completed for namespace: %s", environmentID)
-	return nil
-}
-
-func cleanupOrphanedVirtualServices(ctx context.Context, k8sClient *kubernetes.Client, namespace string, expected map[string]bool) error {
-	gvr := schema.GroupVersionResource{
-		Group:    "networking.istio.io",
-		Version:  "v1alpha3",
-		Resource: "virtualservices",
-	}
-
-	dynamicClient := k8sClient.DynamicClient.Resource(gvr).Namespace(namespace)
-	
-	virtualServices, err := dynamicClient.List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	
-	for _, vs := range virtualServices.Items {
-		if !expected[vs.GetName()] {
-			log.Printf("Deleting orphaned VirtualService: %s", vs.GetName())
-			err := dynamicClient.Delete(ctx, vs.GetName(), metav1.DeleteOptions{})
-			if err != nil {
-				log.Printf("Warning: Failed to delete orphaned VirtualService %s: %v", vs.GetName(), err)
-			}
-		}
-	}
-	
 	return nil
 }
 

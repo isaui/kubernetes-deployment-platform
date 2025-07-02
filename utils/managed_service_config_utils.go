@@ -3,8 +3,23 @@ package utils
 
 import (
 	"fmt"
+	"net"
 	"strings"
+	"time"
 	"github.com/pendeploy-simple/models"
+)
+
+// Port allocation ranges for managed services
+const (
+	POSTGRES_PORT_BASE = 30000  // PostgreSQL: 30000-30999 (1000 instances)
+	MYSQL_PORT_BASE    = 31000  // MySQL: 31000-31999 (1000 instances)
+	REDIS_PORT_BASE    = 32000  // Redis: 32000-32199 (200 instances)
+	MONGODB_PORT_BASE  = 32200  // MongoDB: 32200-32399 (200 instances)
+	RABBITMQ_PORT_BASE = 32400  // RabbitMQ: 32400-32499 (100 instances)
+	MINIO_PORT_BASE    = 32500  // MinIO: 32500-32599 (100 instances)
+	
+	MAX_PORT_ATTEMPTS  = 100    // Maximum attempts to find available port
+	PORT_RANGE_SIZE    = 100    // Default range size per service type
 )
 
 // ManagedServiceConfig holds configuration for a managed service type
@@ -13,15 +28,18 @@ type ManagedServiceConfig struct {
 	RequiresStorage bool
 	DefaultVersion  string
 	ServiceType     string // "StatefulSet" or "Deployment"
+	ExposureType    string // "NodePort" or "Ingress"
+	PortBase        int    // Base port for NodePort allocation
 }
 
 // ServiceExposureConfig defines how a service should be exposed
 type ServiceExposureConfig struct {
-	Name        string // "primary", "console", "management", etc.
-	Port        int
-	IsHTTP      bool   // true for HTTP services, false for TCP
-	Description string
-	Path        string // URL path for HTTP services
+	Name         string // "primary", "console", "management", etc.
+	Port         int
+	IsHTTP       bool   // true for HTTP services, false for TCP
+	Description  string
+	Path         string // URL path for HTTP services
+	ExposureType string // "NodePort" or "Ingress"
 }
 
 // GetManagedServiceConfigs returns configuration for all supported managed services
@@ -32,36 +50,48 @@ func GetManagedServiceConfigs() map[string]ManagedServiceConfig {
 			RequiresStorage: true,
 			DefaultVersion:  "15",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        POSTGRES_PORT_BASE,
 		},
 		"mysql": {
 			Port:            3306,
 			RequiresStorage: true,
 			DefaultVersion:  "8.0",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        MYSQL_PORT_BASE,
 		},
 		"redis": {
 			Port:            6379,
 			RequiresStorage: true,
 			DefaultVersion:  "7",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        REDIS_PORT_BASE,
 		},
 		"mongodb": {
 			Port:            27017,
 			RequiresStorage: true,
 			DefaultVersion:  "7.0",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        MONGODB_PORT_BASE,
 		},
 		"minio": {
 			Port:            9000,
 			RequiresStorage: true,
 			DefaultVersion:  "latest",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        MINIO_PORT_BASE,
 		},
 		"rabbitmq": {
 			Port:            5672,
 			RequiresStorage: true,
 			DefaultVersion:  "3.12",
 			ServiceType:     "StatefulSet",
+			ExposureType:    "NodePort",
+			PortBase:        RABBITMQ_PORT_BASE,
 		},
 	}
 }
@@ -72,88 +102,138 @@ func GetManagedServiceExposureConfig(managedType string) []ServiceExposureConfig
 	case "postgresql":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        5432,
-				IsHTTP:      false,
-				Description: "PostgreSQL Database Connection",
-				Path:        "/",
+				Name:         "primary",
+				Port:         5432,
+				IsHTTP:       false,
+				Description:  "PostgreSQL Database Connection",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 		}
 	case "mysql":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        3306,
-				IsHTTP:      false,
-				Description: "MySQL Database Connection",
-				Path:        "/",
+				Name:         "primary",
+				Port:         3306,
+				IsHTTP:       false,
+				Description:  "MySQL Database Connection",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 		}
 	case "redis":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        6379,
-				IsHTTP:      false,
-				Description: "Redis Database Connection",
-				Path:        "/",
+				Name:         "primary",
+				Port:         6379,
+				IsHTTP:       false,
+				Description:  "Redis Database Connection",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 		}
 	case "mongodb":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        27017,
-				IsHTTP:      false,
-				Description: "MongoDB Database Connection",
-				Path:        "/",
+				Name:         "primary",
+				Port:         27017,
+				IsHTTP:       false,
+				Description:  "MongoDB Database Connection",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 		}
 	case "minio":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        9000,
-				IsHTTP:      true,
-				Description: "MinIO S3 API",
-				Path:        "/",
+				Name:         "primary",
+				Port:         9000,
+				IsHTTP:       false,
+				Description:  "MinIO S3 API",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 			{
-				Name:        "console",
-				Port:        9001,
-				IsHTTP:      true,
-				Description: "MinIO Console (Web UI)",
-				Path:        "/",
+				Name:         "console",
+				Port:         9001,
+				IsHTTP:       true,
+				Description:  "MinIO Console (Web UI)",
+				Path:         "/",
+				ExposureType: "Ingress",
 			},
 		}
 	case "rabbitmq":
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        5672,
-				IsHTTP:      false,
-				Description: "RabbitMQ AMQP Connection",
-				Path:        "/",
+				Name:         "primary",
+				Port:         5672,
+				IsHTTP:       false,
+				Description:  "RabbitMQ AMQP Connection",
+				Path:         "/",
+				ExposureType: "NodePort",
 			},
 			{
-				Name:        "management",
-				Port:        15672,
-				IsHTTP:      true,
-				Description: "RabbitMQ Management UI",
-				Path:        "/",
+				Name:         "management",
+				Port:         15672,
+				IsHTTP:       true,
+				Description:  "RabbitMQ Management UI",
+				Path:         "/",
+				ExposureType: "Ingress",
 			},
 		}
 	default:
 		return []ServiceExposureConfig{
 			{
-				Name:        "primary",
-				Port:        8080,
-				IsHTTP:      true,
-				Description: "Default HTTP Service",
-				Path:        "/",
+				Name:         "primary",
+				Port:         8080,
+				IsHTTP:       true,
+				Description:  "Default HTTP Service",
+				Path:         "/",
+				ExposureType: "Ingress",
 			},
 		}
 	}
+}
+
+// AllocateNodePort allocates an available NodePort for managed service
+func AllocateNodePort(managedType string, serverIP string) (int, error) {
+	config, exists := GetManagedServiceConfigs()[managedType]
+	if !exists {
+		return 0, fmt.Errorf("unsupported managed service type: %s", managedType)
+	}
+	
+	basePort := config.PortBase
+	
+	// Try to find available port starting from base port
+	for i := 0; i < MAX_PORT_ATTEMPTS; i++ {
+		candidatePort := basePort + i
+		
+		// Ensure we stay within valid NodePort range
+		if candidatePort > 32767 {
+			return 0, fmt.Errorf("exceeded maximum NodePort range for %s", managedType)
+		}
+		
+		// Check if port is available by attempting TCP connection
+		if !isPortInUse(serverIP, candidatePort) {
+			return candidatePort, nil
+		}
+	}
+	
+	return 0, fmt.Errorf("no available ports found for %s in range %d-%d", 
+		managedType, basePort, basePort+MAX_PORT_ATTEMPTS)
+}
+
+// isPortInUse checks if a port is in use by attempting TCP connection
+func isPortInUse(host string, port int) bool {
+	timeout := time.Second * 2
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
+	if err != nil {
+		// Connection failed, port is likely available
+		return false
+	}
+	conn.Close()
+	// Connection succeeded, port is in use
+	return true
 }
 
 // GetManagedServicePort returns the primary port for a managed service type
@@ -199,16 +279,8 @@ func GetManagedServiceType(managedType string) string {
 	return "Deployment"
 }
 
-// getExternalPortForService returns the correct external port for a service config
-func getExternalPortForService(config ServiceExposureConfig) int {
-	if config.IsHTTP {
-		return 443 // HTTPS port for HTTP services
-	}
-	return config.Port // Original port for TCP services via dedicated entrypoints
-}
-
-// GenerateManagedServiceEnvVars creates comprehensive environment variables for managed service
-func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
+// GenerateManagedServiceEnvVars creates comprehensive environment variables for managed service with NodePort
+func GenerateManagedServiceEnvVars(service models.Service, serverIP string, nodePort int) models.EnvVars {
 	envVars := make(models.EnvVars)
 	
 	// Generate internal service hostname (primary service)
@@ -221,27 +293,29 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 	envVars["SERVICE_HOST"] = internalHost
 	envVars["SERVICE_PORT"] = fmt.Sprintf("%d", service.Port)
 	
-	// Generate URLs for all exposed services
+	// Generate connection info for all exposed services
 	for _, config := range exposureConfigs {
-		externalHost := GetManagedServiceExternalDomain(service, config.Name)
-		externalPort := getExternalPortForService(config)
-		
 		if config.Name == "primary" {
-			// Primary service gets main variables
-			if config.IsHTTP {
-				envVars["SERVICE_EXTERNAL_URL"] = fmt.Sprintf("https://%s", externalHost)
+			// Primary service gets main variables with NodePort
+			if config.ExposureType == "NodePort" {
+				envVars["SERVICE_EXTERNAL_HOST"] = serverIP
+				envVars["SERVICE_EXTERNAL_PORT"] = fmt.Sprintf("%d", nodePort)
 			} else {
-				envVars["SERVICE_EXTERNAL_HOST"] = externalHost
-				envVars["SERVICE_EXTERNAL_PORT"] = fmt.Sprintf("%d", externalPort)
+				// HTTP services use domain
+				externalHost := GetManagedServiceExternalDomain(service, config.Name)
+				envVars["SERVICE_EXTERNAL_URL"] = fmt.Sprintf("https://%s", externalHost)
 			}
 		} else {
 			// Secondary services get prefixed variables
 			prefix := strings.ToUpper(config.Name)
-			if config.IsHTTP {
-				envVars[fmt.Sprintf("%s_EXTERNAL_URL", prefix)] = fmt.Sprintf("https://%s", externalHost)
+			if config.ExposureType == "NodePort" {
+				// TCP services (if any secondary TCP services in future)
+				envVars[fmt.Sprintf("%s_EXTERNAL_HOST", prefix)] = serverIP
+				envVars[fmt.Sprintf("%s_EXTERNAL_PORT", prefix)] = fmt.Sprintf("%d", config.Port) // Would need separate allocation
 			} else {
-				envVars[fmt.Sprintf("%s_EXTERNAL_HOST", prefix)] = externalHost
-				envVars[fmt.Sprintf("%s_EXTERNAL_PORT", prefix)] = fmt.Sprintf("%d", externalPort)
+				// HTTP services use domain
+				externalHost := GetManagedServiceExternalDomain(service, config.Name)
+				envVars[fmt.Sprintf("%s_EXTERNAL_URL", prefix)] = fmt.Sprintf("https://%s", externalHost)
 			}
 			
 			// Internal URLs
@@ -251,60 +325,56 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		}
 	}
 	
-	// Service-specific environment variables with full connection info
+	// Service-specific environment variables with NodePort connections
 	switch service.ManagedType {
 	case "postgresql":
 		dbName := GenerateSecureID("db")
 		dbUser := GenerateSecureID("user")
 		dbPassword := GenerateSecurePassword(16)
-		externalHost := GetManagedServiceExternalDomain(service, "primary")
 		
 		envVars["POSTGRES_DB"] = dbName
 		envVars["POSTGRES_USER"] = dbUser
 		envVars["POSTGRES_PASSWORD"] = dbPassword
 		
-		// Connection strings - use original port for TCP routing via dedicated entrypoints
+		// Connection strings - use NodePort for external access
 		envVars["DATABASE_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 5432, dbName)
+		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?sslmode=disable", dbUser, dbPassword, serverIP, nodePort, dbName)
 		
 	case "mysql":
 		dbName := GenerateSecureID("db")
 		dbUser := GenerateSecureID("user")
 		dbPassword := GenerateSecurePassword(16)
-		externalHost := GetManagedServiceExternalDomain(service, "primary")
 		
 		envVars["MYSQL_DATABASE"] = dbName
 		envVars["MYSQL_USER"] = dbUser
 		envVars["MYSQL_PASSWORD"] = dbPassword
 		envVars["MYSQL_ROOT_PASSWORD"] = GenerateSecurePassword(20)
 		
-		// Connection strings - use original port for TCP routing via dedicated entrypoints
+		// Connection strings - use NodePort for external access
 		envVars["DATABASE_URL"] = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 3306, dbName)
+		envVars["DATABASE_EXTERNAL_URL"] = fmt.Sprintf("mysql://%s:%s@%s:%d/%s", dbUser, dbPassword, serverIP, nodePort, dbName)
 		
 	case "redis":
 		redisPassword := GenerateSecurePassword(16)
-		externalHost := GetManagedServiceExternalDomain(service, "primary")
 		
 		envVars["REDIS_PASSWORD"] = redisPassword
 		
-		// Connection strings - use original port for TCP routing via dedicated entrypoints
+		// Connection strings - use NodePort for external access
 		envVars["REDIS_URL"] = fmt.Sprintf("redis://:%s@%s:%d", redisPassword, internalHost, service.Port)
-		envVars["REDIS_EXTERNAL_URL"] = fmt.Sprintf("redis://:%s@%s:%d", redisPassword, externalHost, 6379)
+		envVars["REDIS_EXTERNAL_URL"] = fmt.Sprintf("redis://:%s@%s:%d", redisPassword, serverIP, nodePort)
 		
 	case "mongodb":
 		dbName := GenerateSecureID("db")
 		dbUser := GenerateSecureID("user")
 		dbPassword := GenerateSecurePassword(16)
-		externalHost := GetManagedServiceExternalDomain(service, "primary")
 		
 		envVars["MONGO_INITDB_DATABASE"] = dbName
 		envVars["MONGO_INITDB_ROOT_USERNAME"] = dbUser
 		envVars["MONGO_INITDB_ROOT_PASSWORD"] = dbPassword
 		
-		// Connection strings - use original port for TCP routing via dedicated entrypoints
+		// Connection strings - use NodePort for external access
 		envVars["MONGODB_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", dbUser, dbPassword, internalHost, service.Port, dbName)
-		envVars["MONGODB_EXTERNAL_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", dbUser, dbPassword, externalHost, 27017, dbName)
+		envVars["MONGODB_EXTERNAL_URL"] = fmt.Sprintf("mongodb://%s:%s@%s:%d/%s", dbUser, dbPassword, serverIP, nodePort, dbName)
 		
 	case "minio":
 		accessKey := GenerateSecureID("access")
@@ -315,17 +385,16 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["MINIO_ROOT_PASSWORD"] = secretKey
 		envVars["MINIO_CONSOLE_ADDRESS"] = ":9001"  // Enable console on port 9001
 		
-		// Connection info for both API and Console
-		apiHost := GetManagedServiceExternalDomain(service, "primary")
+		// Connection info - API via NodePort, Console via domain
 		consoleHost := GetManagedServiceExternalDomain(service, "console")
 		
-		envVars["MINIO_ENDPOINT"] = internalHost
-		envVars["MINIO_EXTERNAL_ENDPOINT"] = apiHost
+		envVars["MINIO_ENDPOINT"] = fmt.Sprintf("%s:%d", internalHost, service.Port)
+		envVars["MINIO_EXTERNAL_ENDPOINT"] = fmt.Sprintf("%s:%d", serverIP, nodePort)
 		envVars["MINIO_ACCESS_KEY"] = accessKey
 		envVars["MINIO_SECRET_KEY"] = secretKey
 		
-		// S3 API and Console URLs - MinIO API and Console are HTTP services
-		envVars["S3_API_URL"] = fmt.Sprintf("https://%s", apiHost)
+		// S3 API via NodePort, Console via domain
+		envVars["S3_API_URL"] = fmt.Sprintf("http://%s:%d", serverIP, nodePort)
 		envVars["MINIO_CONSOLE_URL"] = fmt.Sprintf("https://%s", consoleHost)
 		
 	case "rabbitmq":
@@ -335,22 +404,21 @@ func GenerateManagedServiceEnvVars(service models.Service) models.EnvVars {
 		envVars["RABBITMQ_DEFAULT_USER"] = username
 		envVars["RABBITMQ_DEFAULT_PASS"] = password
 		
-		// Connection info for both AMQP and Management
-		amqpHost := GetManagedServiceExternalDomain(service, "primary")
+		// Connection info - AMQP via NodePort, Management via domain
 		mgmtHost := GetManagedServiceExternalDomain(service, "management")
 		
-		// AMQP Connection strings - use original port for TCP routing via dedicated entrypoints
+		// AMQP Connection strings - use NodePort for external access
 		envVars["RABBITMQ_URL"] = fmt.Sprintf("amqp://%s:%s@%s:%d", username, password, internalHost, service.Port)
-		envVars["RABBITMQ_EXTERNAL_URL"] = fmt.Sprintf("amqp://%s:%s@%s:%d", username, password, amqpHost, 5672)
+		envVars["RABBITMQ_EXTERNAL_URL"] = fmt.Sprintf("amqp://%s:%s@%s:%d", username, password, serverIP, nodePort)
 		
-		// Management UI - HTTP service uses HTTPS
+		// Management UI - HTTP service uses domain
 		envVars["RABBITMQ_MANAGEMENT_URL"] = fmt.Sprintf("https://%s", mgmtHost)
 	}
 	
 	return envVars
 }
 
-// GetManagedServiceExternalDomain generates external domain for managed service with optional endpoint name
+// GetManagedServiceExternalDomain generates external domain for HTTP services only
 func GetManagedServiceExternalDomain(service models.Service, endpointName ...string) string {
 	serviceName := SanitizeLabel(service.Name)
 	
@@ -381,14 +449,16 @@ func GetAllManagedServiceDomains(service models.Service) map[string]string {
 	exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
 	for _, config := range exposureConfigs {
-		domains[config.Name] = GetManagedServiceExternalDomain(service, config.Name)
+		if config.ExposureType == "Ingress" {
+			domains[config.Name] = GetManagedServiceExternalDomain(service, config.Name)
+		}
 	}
 	
 	return domains
 }
 
-// GetManagedServiceConnectionInfo returns comprehensive connection information
-func GetManagedServiceConnectionInfo(service models.Service) map[string]interface{} {
+// GetManagedServiceConnectionInfo returns comprehensive connection information with NodePort
+func GetManagedServiceConnectionInfo(service models.Service, serverIP string, nodePort int) map[string]interface{} {
 	info := make(map[string]interface{})
 	exposureConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 	
@@ -405,14 +475,17 @@ func GetManagedServiceConnectionInfo(service models.Service) map[string]interfac
 		endpoint["port"] = fmt.Sprintf("%d", config.Port)
 		endpoint["protocol"] = "TCP"
 		
-		externalPort := getExternalPortForService(config)
-		
-		if config.IsHTTP {
+		if config.ExposureType == "NodePort" {
+			endpoint["protocol"] = "TCP"
+			endpoint["external_host"] = serverIP
+			if config.Name == "primary" {
+				endpoint["external_port"] = fmt.Sprintf("%d", nodePort)
+			} else {
+				endpoint["external_port"] = fmt.Sprintf("%d", config.Port) // Would need separate allocation
+			}
+		} else {
 			endpoint["protocol"] = "HTTP"
 			endpoint["external_url"] = fmt.Sprintf("https://%s", GetManagedServiceExternalDomain(service, config.Name))
-		} else {
-			endpoint["external_host"] = GetManagedServiceExternalDomain(service, config.Name)
-			endpoint["external_port"] = fmt.Sprintf("%d", externalPort)
 		}
 		
 		// Internal connection
