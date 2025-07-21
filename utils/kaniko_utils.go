@@ -191,45 +191,49 @@ func createKanikoBuildJob(registryURL string, deployment models.Deployment, serv
     return job, nil
 }
 
-// generateDockerfileFixScript creates shell script to intelligently fix missing ARG/ENV
+// generateDockerfileFixScript creates shell script to add missing ARG/ENV templates
 func generateDockerfileFixScript(envVars models.EnvVars) string {
+    if len(envVars) == 0 {
+        return ""
+    }
+    
     var script strings.Builder
     
     script.WriteString(`
-                # Create backup of original
-                cp Dockerfile Dockerfile.backup
-                
-                echo "Checking existing ARG/ENV in Dockerfile..."
+                echo "Adding missing ARG/ENV templates to Dockerfile..."
     `)
     
-    // Add specific ARG/ENV from service config - only if missing
-    if len(envVars) > 0 {
-        script.WriteString("\n                # Check and add missing environment variables\n")
-        for key, value := range envVars {
-            script.WriteString(fmt.Sprintf(`
-                # Check if ARG %s already exists
-                if ! grep -q "^ARG %s" Dockerfile; then
+    // First pass: Add all missing ARGs
+    script.WriteString(`
+                echo "=== Adding missing ARGs ==="`)
+    
+    for key := range envVars {
+        script.WriteString(fmt.Sprintf(`
+                if ! grep -q "^ARG %s\b" Dockerfile; then
                     echo "Adding missing ARG %s"
-                    # Find the best place to insert ARG (after FROM line)
-                    sed -i '/^FROM /a ARG %s=%s' Dockerfile
-                else
-                    echo "ARG %s already exists, skipping"
-                fi
+                    sed -i '/^FROM /a ARG %s' Dockerfile
+                fi`, key, key, key))
+    }
+    
+    // Second pass: Add all missing ENVs  
+    script.WriteString(`
                 
-                # Check if ENV %s already exists
-                if ! grep -q "^ENV %s" Dockerfile; then
+                echo "=== Adding missing ENVs ==="`)
+    
+    for key := range envVars {
+        script.WriteString(fmt.Sprintf(`
+                if ! grep -q "^ENV %s=" Dockerfile; then
                     echo "Adding missing ENV %s"
-                    # Insert ENV after ARG or FROM
+                    # Add ENV after all ARG lines
                     if grep -q "^ARG " Dockerfile; then
-                        sed -i '/^ARG /a ENV %s=$%s' Dockerfile | head -1
+                        # Find the last ARG line and add ENV after it
+                        LAST_ARG_LINE=$(grep -n "^ARG " Dockerfile | tail -1 | cut -d: -f1)
+                        sed -i "${LAST_ARG_LINE}a ENV %s=\${%s}" Dockerfile
                     else
-                        sed -i '/^FROM /a ENV %s=%s' Dockerfile
+                        # No ARG found, add after FROM
+                        sed -i '/^FROM /a ENV %s=\${%s}' Dockerfile
                     fi
-                else
-                    echo "ENV %s already exists, skipping"
-                fi
-            `, key, key, key, key, value, key, key, key, key, key, key, key, value, key))
-        }
+                fi`, key, key, key, key, key, key))
     }
     
     return script.String()
@@ -245,4 +249,3 @@ func generateKanikoBuildArgs(envVars models.EnvVars) []string {
     
     return buildArgs
 }
-
