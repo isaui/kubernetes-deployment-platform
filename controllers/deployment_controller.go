@@ -47,11 +47,10 @@ func (c *DeploymentController) CreateDeployment(ctx *gin.Context) {
 		return
 	}
 	
-	// Replace raw newlines with escaped newlines in JSON string values
+	// Smart escape: only escape literal newlines that aren't already escaped
 	// This handles merge commit messages that contain literal \n characters
-	cleanedBody := strings.ReplaceAll(string(requestBody), "\n", "\\n")
-	cleanedBody = strings.ReplaceAll(cleanedBody, "\r", "\\r")
-	cleanedBody = strings.ReplaceAll(cleanedBody, "\t", "\\t")
+	bodyStr := string(requestBody)
+	cleanedBody := smartEscapeJSON(bodyStr)
 	
 	// Reset the request body for JSON binding
 	ctx.Request.Body = io.NopCloser(bytes.NewBufferString(cleanedBody))
@@ -156,6 +155,32 @@ func (c *DeploymentController) StreamRuntimeLogs(ctx *gin.Context) {
 	err = c.deploymentService.GetServiceRuntimeLogsRealtime(deployment.ServiceID, ctx.Writer)
 	if err != nil {
 		// Don't send error as JSON as we've already started streaming
-		ctx.Writer.Write([]byte("data: {\"error\": \"" + err.Error() + "\"}\n\n"))
+		ctx.Writer.Write([]byte("data: {\"error\": \"" + err.Error() + "}\n\n"))
 	}
+}
+
+// smartEscapeJSON handles literal newlines in JSON strings more intelligently
+// This prevents double-escaping while handling merge commit messages with newlines
+func smartEscapeJSON(jsonStr string) string {
+	// First, temporarily replace already escaped sequences to protect them
+	placeholder1 := "__ESCAPED_NEWLINE__"
+	placeholder2 := "__ESCAPED_CARRIAGE__"
+	placeholder3 := "__ESCAPED_TAB__"
+	
+	// Protect already escaped sequences
+	jsonStr = strings.ReplaceAll(jsonStr, "\\n", placeholder1)
+	jsonStr = strings.ReplaceAll(jsonStr, "\\r", placeholder2)
+	jsonStr = strings.ReplaceAll(jsonStr, "\\t", placeholder3)
+	
+	// Now escape literal newlines, carriage returns, and tabs
+	jsonStr = strings.ReplaceAll(jsonStr, "\n", "\\n")
+	jsonStr = strings.ReplaceAll(jsonStr, "\r", "\\r")
+	jsonStr = strings.ReplaceAll(jsonStr, "\t", "\\t")
+	
+	// Restore the already escaped sequences
+	jsonStr = strings.ReplaceAll(jsonStr, placeholder1, "\\n")
+	jsonStr = strings.ReplaceAll(jsonStr, placeholder2, "\\r")
+	jsonStr = strings.ReplaceAll(jsonStr, placeholder3, "\\t")
+	
+	return jsonStr
 }
