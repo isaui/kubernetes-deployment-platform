@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,9 +16,17 @@ func SendWebhookNotification(webhookUrl string, deploymentID string, status stri
 		return
 	}
 	
+	// Sanitize the webhook URL - remove any whitespace or newlines
+	webhookUrl = strings.TrimSpace(webhookUrl)
+	
 	// Safety check for deploymentID
 	if deploymentID == "" {
 		log.Printf("Warning: Empty deploymentID in webhook notification")
+	}
+	
+	// Clean error message if present to prevent JSON parsing errors
+	if errorMessage != "" {
+		errorMessage = strings.ReplaceAll(errorMessage, "\n", " ")
 	}
 	
 	// Prepare webhook payload
@@ -58,6 +67,12 @@ func SendErrorWebhook(webhookUrl string, errMessage string) {
 	if webhookUrl == "" {
 		return
 	}
+	
+	// Sanitize the webhook URL - remove any whitespace or newlines
+	webhookUrl = strings.TrimSpace(webhookUrl)
+	
+	// Clean error message - replace newlines with spaces to prevent JSON parsing errors
+	errMessage = strings.ReplaceAll(errMessage, "\n", " ")
 	
 	// Prepare webhook payload
 	payload := map[string]interface{}{
