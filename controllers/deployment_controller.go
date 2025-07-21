@@ -1,7 +1,10 @@
 package controllers
 
 import (
+	"bytes"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pendeploy-simple/dto"
@@ -36,6 +39,23 @@ func (c *DeploymentController) RegisterRoutes(router *gin.RouterGroup) {
 // Creates a new Kubernetes job for building and deploying a Git repository
 func (c *DeploymentController) CreateDeployment(ctx *gin.Context) {
 	var request dto.GitDeployRequest
+	
+	// Read raw request body to handle potential newlines in commit messages
+	requestBody, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body: " + err.Error()})
+		return
+	}
+	
+	// Replace raw newlines with escaped newlines in JSON string values
+	// This handles merge commit messages that contain literal \n characters
+	cleanedBody := strings.ReplaceAll(string(requestBody), "\n", "\\n")
+	cleanedBody = strings.ReplaceAll(cleanedBody, "\r", "\\r")
+	cleanedBody = strings.ReplaceAll(cleanedBody, "\t", "\\t")
+	
+	// Reset the request body for JSON binding
+	ctx.Request.Body = io.NopCloser(bytes.NewBufferString(cleanedBody))
+	
 	if err := ctx.ShouldBindJSON(&request); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		// If there's a callbackUrl, notify of binding error
