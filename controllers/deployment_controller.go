@@ -40,19 +40,19 @@ func (c *DeploymentController) RegisterRoutes(router *gin.RouterGroup) {
 func (c *DeploymentController) CreateDeployment(ctx *gin.Context) {
 	var request dto.GitDeployRequest
 	
-	// Read raw request body to handle potential newlines in commit messages
+	// Read and clean request body BEFORE JSON binding
+	// This fixes merge commit newlines that break JSON parsing
 	requestBody, err := io.ReadAll(ctx.Request.Body)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body: " + err.Error()})
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
 		return
 	}
 	
-	// Smart escape: only escape literal newlines that aren't already escaped
-	// This handles merge commit messages that contain literal \n characters
-	bodyStr := string(requestBody)
-	cleanedBody := smartEscapeJSON(bodyStr)
+	// Simple fix: replace literal newlines with spaces in JSON
+	cleanedBody := strings.ReplaceAll(string(requestBody), "\n", " ")
+	cleanedBody = strings.ReplaceAll(cleanedBody, "\r", " ")
 	
-	// Reset the request body for JSON binding
+	// Reset request body with cleaned JSON
 	ctx.Request.Body = io.NopCloser(bytes.NewBufferString(cleanedBody))
 	
 	if err := ctx.ShouldBindJSON(&request); err != nil {
@@ -157,30 +157,4 @@ func (c *DeploymentController) StreamRuntimeLogs(ctx *gin.Context) {
 		// Don't send error as JSON as we've already started streaming
 		ctx.Writer.Write([]byte("data: {\"error\": \"" + err.Error() + "}\n\n"))
 	}
-}
-
-// smartEscapeJSON handles literal newlines in JSON strings more intelligently
-// This prevents double-escaping while handling merge commit messages with newlines
-func smartEscapeJSON(jsonStr string) string {
-	// First, temporarily replace already escaped sequences to protect them
-	placeholder1 := "__ESCAPED_NEWLINE__"
-	placeholder2 := "__ESCAPED_CARRIAGE__"
-	placeholder3 := "__ESCAPED_TAB__"
-	
-	// Protect already escaped sequences
-	jsonStr = strings.ReplaceAll(jsonStr, "\\n", placeholder1)
-	jsonStr = strings.ReplaceAll(jsonStr, "\\r", placeholder2)
-	jsonStr = strings.ReplaceAll(jsonStr, "\\t", placeholder3)
-	
-	// Now escape literal newlines, carriage returns, and tabs
-	jsonStr = strings.ReplaceAll(jsonStr, "\n", "\\n")
-	jsonStr = strings.ReplaceAll(jsonStr, "\r", "\\r")
-	jsonStr = strings.ReplaceAll(jsonStr, "\t", "\\t")
-	
-	// Restore the already escaped sequences
-	jsonStr = strings.ReplaceAll(jsonStr, placeholder1, "\\n")
-	jsonStr = strings.ReplaceAll(jsonStr, placeholder2, "\\r")
-	jsonStr = strings.ReplaceAll(jsonStr, placeholder3, "\\t")
-	
-	return jsonStr
 }
