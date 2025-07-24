@@ -383,17 +383,18 @@ func GenerateManagedServiceEnvVars(service models.Service, serverIP string, node
 		// MinIO requires specific environment variables
 		envVars["MINIO_ROOT_USER"] = accessKey
 		envVars["MINIO_ROOT_PASSWORD"] = secretKey
-		envVars["MINIO_CONSOLE_ADDRESS"] = "0.0.0.0:9001"  // Enable console on port 9001
-		envVars["MINIO_BROWSER"] = "on"                     // ✅ Fix: enable browser/console
-
+		envVars["MINIO_CONSOLE_ADDRESS"] = ":9001"           // Console listens on port 9001
+		envVars["MINIO_BROWSER"] = "on"                      // Enable browser/console
+		
+		// Console URL configuration
+		consoleHost := GetManagedServiceExternalDomain(service, "console")
+		envVars["MINIO_SERVER_URL"] = fmt.Sprintf("http://%s:9000", internalHost) // Tell console where API server is
+		envVars["MINIO_BROWSER_REDIRECT_URL"] = fmt.Sprintf("https://%s", consoleHost) // Console redirect URL
 		
 		// Connection info - API via NodePort, Console via domain
-		consoleHost := GetManagedServiceExternalDomain(service, "console")
-		
 		envVars["MINIO_ENDPOINT"] = fmt.Sprintf("%s:%d", internalHost, service.Port)
 		envVars["MINIO_EXTERNAL_ENDPOINT"] = fmt.Sprintf("%s:%d", serverIP, nodePort)
 		envVars["MINIO_ACCESS_KEY"] = accessKey
-		envVars["MINIO_BROWSER_REDIRECT_URL"] = fmt.Sprintf("https://%s", consoleHost)
 		envVars["MINIO_SECRET_KEY"] = secretKey
 		
 		// S3 API via NodePort, Console via domain

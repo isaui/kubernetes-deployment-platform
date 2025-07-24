@@ -65,8 +65,8 @@ type Service struct {
 	StartCommand  string         `json:"startCommand" gorm:"default:null"`
 	
 	// Resources & Scaling
-	CPULimit      string         `json:"cpuLimit" gorm:"default:500m"`
-	MemoryLimit   string         `json:"memoryLimit" gorm:"default:512Mi"`
+	CPULimit      string         `json:"cpuLimit" gorm:"default:1024m"`
+	MemoryLimit   string         `json:"memoryLimit" gorm:"default:2Gi"`
 	IsStaticReplica bool          `json:"isStaticReplica" gorm:"default:true"`
 	Replicas      int            `json:"replicas" gorm:"default:1"`
 	MinReplicas   int            `json:"minReplicas" gorm:"default:1"`

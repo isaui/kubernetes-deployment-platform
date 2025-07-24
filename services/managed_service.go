@@ -11,6 +11,8 @@ import (
 	"github.com/pendeploy-simple/models"
 	"github.com/pendeploy-simple/repositories"
 	"github.com/pendeploy-simple/utils"
+	
+	resource "k8s.io/apimachinery/pkg/api/resource"
 )
 
 // ManagedServiceService handles business logic for managed services
@@ -158,8 +160,11 @@ func (s *ManagedServiceService) UpdateManagedService(serviceChanges models.Servi
 		updatedService.MemoryLimit = serviceChanges.MemoryLimit
 	}
 	
-	// Allow storage size updates (will require restart)
+	// Allow storage size updates (only allow increase, StatefulSet cannot shrink storage)
 	if serviceChanges.StorageSize != "" {
+		if err := s.validateStorageSizeIncrease(existingService.StorageSize, serviceChanges.StorageSize); err != nil {
+			return serviceChanges, err
+		}
 		updatedService.StorageSize = serviceChanges.StorageSize
 	}
 	
@@ -196,9 +201,16 @@ func (s *ManagedServiceService) UpdateManagedService(serviceChanges models.Servi
 				s.serviceRepo.Update(updatedService)
 				
 				log.Printf("Failed to update service after redeploy: %v", err)
+				return
 			}
 			
+			// Update with successful redeployment status and save to database
 			updatedService = *redeployedService
+			err = s.serviceRepo.Update(updatedService)
+			if err != nil {
+				log.Printf("Failed to update service status after successful redeploy: %v", err)
+			}
+			log.Printf("Successfully updated service status to: %s", updatedService.Status)
 		}()
 	}
 	
@@ -287,6 +299,31 @@ func (s *ManagedServiceService) validateManagedServiceConfig(service models.Serv
 		if len(service.MemoryLimit) < 3 {
 			return errors.New("invalid memory limit format")
 		}
+	}
+	
+	return nil
+}
+
+// validateStorageSizeIncrease validates that storage size can only be increased
+func (s *ManagedServiceService) validateStorageSizeIncrease(existingSize, newSize string) error {
+	if existingSize == "" {
+		return nil // No existing size, allow any size
+	}
+	
+	// Use Kubernetes resource parsing
+	existingQuantity, err := resource.ParseQuantity(existingSize)
+	if err != nil {
+		return fmt.Errorf("invalid existing storage size: %v", err)
+	}
+	
+	newQuantity, err := resource.ParseQuantity(newSize)
+	if err != nil {
+		return fmt.Errorf("invalid new storage size: %v", err)
+	}
+	
+	// Compare quantities
+	if newQuantity.Cmp(existingQuantity) < 0 {
+		return fmt.Errorf("storage size cannot be decreased from %s to %s", existingSize, newSize)
 	}
 	
 	return nil

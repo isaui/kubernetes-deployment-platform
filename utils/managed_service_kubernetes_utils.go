@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/pendeploy-simple/lib/kubernetes"
 	"github.com/pendeploy-simple/models"
@@ -19,10 +20,30 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// getOrAllocateNodePort gets existing NodePort from service or allocates new one
+func getOrAllocateNodePort(ctx context.Context, client *kubernetes.Client, service models.Service, serverIP string) (int, error) {
+	resourceName := GetResourceName(service)
+
+	// Try to get existing service to reuse NodePort
+	existingService, err := client.Clientset.CoreV1().Services(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
+	if err == nil {
+		// Service exists, check if it has NodePort
+		for _, port := range existingService.Spec.Ports {
+			if port.NodePort != 0 {
+				log.Printf("Reusing existing NodePort %d for service %s", port.NodePort, service.Name)
+				return int(port.NodePort), nil
+			}
+		}
+	}
+
+	// Service doesn't exist or doesn't have NodePort, allocate new one
+	return AllocateNodePort(service.ManagedType, serverIP)
+}
+
 // DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with NodePort for TCP services
 func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (*models.Service, error) {
 	service.Status = "building"
-	
+
 	k8sClient, err := kubernetes.NewClient()
 	if err != nil {
 		service.Status = "failed"
@@ -30,14 +51,14 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 	}
 
 	ctx := context.Background()
-	
+
 	if err := EnsureNamespaceExists(service.EnvironmentID); err != nil {
 		service.Status = "failed"
 		return &service, fmt.Errorf("failed to ensure namespace: %v", err)
 	}
 
-	// Allocate NodePort for primary TCP service
-	nodePort, err := AllocateNodePort(service.ManagedType, serverIP)
+	// Check if service already exists to reuse NodePort
+	nodePort, err := getOrAllocateNodePort(ctx, k8sClient, service, serverIP)
 	if err != nil {
 		service.Status = "failed"
 		return &service, fmt.Errorf("failed to allocate NodePort: %v", err)
@@ -46,7 +67,7 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 	// Set port and env vars using enhanced utils with NodePort
 	service.Port = GetManagedServicePort(service.ManagedType)
 	service.EnvVars = GenerateManagedServiceEnvVars(service, serverIP, nodePort)
-	
+
 	var deploymentErrors []string
 
 	// Deploy workload (StatefulSet/Deployment)
@@ -66,14 +87,25 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 		}
 	}
 
-	// Deploy all services (NodePort for TCP, ClusterIP for HTTP)
-	if err := deployAllManagedServices(ctx, k8sClient, service, nodePort); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
-	}
+	// Check if services already exist - if yes, skip service/ingress deployment
+	// This prevents NodePort conflicts during StatefulSet resource updates
+	resourceName := GetResourceName(service)
+	_, serviceErr := k8sClient.Clientset.CoreV1().Services(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
+	if serviceErr != nil && errors.IsNotFound(serviceErr) {
+		// Services don't exist, deploy them
+		log.Printf("Deploying new services and ingresses for %s", service.Name)
 
-	// Deploy ingresses only for HTTP services
-	if err := deployManagedIngresses(ctx, k8sClient, service); err != nil {
-		deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingresses: %v", err))
+		// Deploy all services (NodePort for TCP, ClusterIP for HTTP)
+		if err := deployAllManagedServices(ctx, k8sClient, service, nodePort); err != nil {
+			deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
+		}
+
+		// Deploy ingresses only for HTTP services
+		if err := deployManagedIngresses(ctx, k8sClient, service); err != nil {
+			deploymentErrors = append(deploymentErrors, fmt.Sprintf("ingresses: %v", err))
+		}
+	} else {
+		log.Printf("Skipping service/ingress deployment - resources already exist for %s", service.Name)
 	}
 
 	if len(deploymentErrors) > 0 {
@@ -84,7 +116,7 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 	// Set external connection info
 	service.Domain = fmt.Sprintf("%s:%d", serverIP, nodePort) // For primary TCP service
 	service.Status = "running"
-	
+
 	log.Printf("Successfully deployed managed service: %s (%s) with NodePort %d", service.Name, service.ManagedType, nodePort)
 	return &service, nil
 }
@@ -92,10 +124,10 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 // deployAllManagedServices creates all required services with appropriate exposure
 func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service, primaryNodePort int) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
-	
+
 	for _, config := range serviceConfigs {
 		var k8sService *corev1.Service
-		
+
 		if config.ExposureType == "NodePort" && config.Name == "primary" {
 			// Primary TCP service gets allocated NodePort
 			k8sService = createNodePortServiceSpec(service, config, primaryNodePort)
@@ -106,7 +138,7 @@ func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, se
 			// HTTP services get ClusterIP for internal access (exposed via Ingress)
 			k8sService = createClusterIPServiceSpec(service, config)
 		}
-		
+
 		if err := applyManagedService(ctx, client, k8sService); err != nil {
 			return fmt.Errorf("service %s: %v", config.Name, err)
 		}
@@ -117,7 +149,7 @@ func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, se
 // deployManagedIngresses creates ingresses only for HTTP services
 func deployManagedIngresses(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
-	
+
 	for _, config := range serviceConfigs {
 		if config.IsHTTP && config.ExposureType == "Ingress" {
 			// Create HTTP Ingress for web services (MinIO console, RabbitMQ management)
@@ -136,7 +168,7 @@ func createNodePortServiceSpec(service models.Service, config ServiceExposureCon
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
 	serviceName := resourceName
-	
+
 	// Add suffix for secondary services
 	if config.Name != "primary" {
 		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
@@ -169,7 +201,7 @@ func createClusterIPServiceSpec(service models.Service, config ServiceExposureCo
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
 	serviceName := resourceName
-	
+
 	// Add suffix for secondary services
 	if config.Name != "primary" {
 		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
@@ -232,7 +264,9 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 					Containers: []corev1.Container{
 						{
 							Name:  "managed-service",
-							Image: containerImage,
+							Image:   containerImage,
+						Command: getManagedServiceCommand(service.ManagedType),
+						Args:    getManagedServiceArgs(service.ManagedType),
 							Ports: containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
@@ -286,7 +320,7 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	
+
 	replicas := int32(service.Replicas)
 	if !service.IsStaticReplica {
 		replicas = int32(service.MinReplicas)
@@ -313,7 +347,7 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 		},
 		Spec: appsv1.DeploymentSpec{
 			RevisionHistoryLimit: int32Ptr(1),
-			Replicas:            &replicas,
+			Replicas:             &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"app": resourceName},
 			},
@@ -323,7 +357,9 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 					Containers: []corev1.Container{
 						{
 							Name:  "managed-service",
-							Image: containerImage,
+							Image:   containerImage,
+						Command: getManagedServiceCommand(service.ManagedType),
+						Args:    getManagedServiceArgs(service.ManagedType),
 							Ports: containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
@@ -373,7 +409,7 @@ func createManagedIngressSpec(service models.Service, config ServiceExposureConf
 	labels := GetResourceLabels(service)
 	ingressName := resourceName
 	serviceName := resourceName
-	
+
 	// Add suffix for secondary ingresses
 	if config.Name != "primary" {
 		ingressName = fmt.Sprintf("%s-%s", resourceName, config.Name)
@@ -475,7 +511,12 @@ func deployManagedDeployment(ctx context.Context, client *kubernetes.Client, ser
 func applyStatefulSet(ctx context.Context, client *kubernetes.Client, statefulSet *appsv1.StatefulSet) error {
 	_, err := client.Clientset.AppsV1().StatefulSets(statefulSet.Namespace).Create(ctx, statefulSet, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		_, err = client.Clientset.AppsV1().StatefulSets(statefulSet.Namespace).Update(ctx, statefulSet, metav1.UpdateOptions{})
+		// For StatefulSet, resource changes require scale-down-update-scale-up
+		if err := updateStatefulSetWithScaling(ctx, client, statefulSet); err != nil {
+			return err
+		}
+		// Update successful, return nil
+		return nil
 	}
 	return err
 }
@@ -507,10 +548,68 @@ func applyManagedIngress(ctx context.Context, client *kubernetes.Client, ingress
 func applyPVC(ctx context.Context, client *kubernetes.Client, pvc *corev1.PersistentVolumeClaim) error {
 	_, err := client.Clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
 	if errors.IsAlreadyExists(err) {
-		log.Printf("PVC %s already exists, skipping creation", pvc.Name)
+		// Check if we need to expand storage
+		existingPVC, getErr := client.Clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(ctx, pvc.Name, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+
+		requested := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+		existing := existingPVC.Spec.Resources.Requests[corev1.ResourceStorage]
+
+		if requested.Cmp(existing) > 0 {
+			log.Printf("Expanding PVC %s from %s to %s", pvc.Name, existing.String(), requested.String())
+			existingPVC.Spec.Resources.Requests[corev1.ResourceStorage] = requested
+			_, err = client.Clientset.CoreV1().PersistentVolumeClaims(pvc.Namespace).Update(ctx, existingPVC, metav1.UpdateOptions{})
+			return err
+		}
+
 		return nil
 	}
 	return err
+}
+
+// updateStatefulSetWithScaling updates StatefulSet by scaling down, updating spec, then scaling up
+func updateStatefulSetWithScaling(ctx context.Context, client *kubernetes.Client, newStatefulSet *appsv1.StatefulSet) error {
+	log.Printf("Updating StatefulSet %s via scale-down-update-scale-up", newStatefulSet.Name)
+
+	// Step 1: Scale down to 0 (get fresh object first)
+	existingStatefulSet, err := client.Clientset.AppsV1().StatefulSets(newStatefulSet.Namespace).Get(ctx, newStatefulSet.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get existing StatefulSet: %v", err)
+	}
+
+	zeroReplicas := int32(0)
+	existingStatefulSet.Spec.Replicas = &zeroReplicas
+	_, err = client.Clientset.AppsV1().StatefulSets(newStatefulSet.Namespace).Update(ctx, existingStatefulSet, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to scale down StatefulSet: %v", err)
+	}
+	log.Printf("Scaled down StatefulSet %s to 0 replicas", newStatefulSet.Name)
+
+	// Step 2: Wait for pods to terminate
+	time.Sleep(5 * time.Second)
+
+	// Step 3: Get fresh object again and update template spec + scale up
+	existingStatefulSet, err = client.Clientset.AppsV1().StatefulSets(newStatefulSet.Namespace).Get(ctx, newStatefulSet.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get StatefulSet for template update: %v", err)
+	}
+
+	// Update template spec with new resource limits
+	existingStatefulSet.Spec.Template = newStatefulSet.Spec.Template
+	existingStatefulSet.Spec.VolumeClaimTemplates = newStatefulSet.Spec.VolumeClaimTemplates
+	
+	// Scale back up to 1
+	oneReplica := int32(1)
+	existingStatefulSet.Spec.Replicas = &oneReplica
+	_, err = client.Clientset.AppsV1().StatefulSets(newStatefulSet.Namespace).Update(ctx, existingStatefulSet, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to scale up StatefulSet: %v", err)
+	}
+
+	log.Printf("Successfully updated StatefulSet %s via scaling", newStatefulSet.Name)
+	return nil
 }
 
 // Service helper functions
@@ -523,7 +622,7 @@ func getManagedServiceImage(managedType, version string) string {
 		"minio":      fmt.Sprintf("minio/minio:%s", version),
 		"rabbitmq":   fmt.Sprintf("rabbitmq:%s-management", version),
 	}
-	
+
 	if image, exists := images[managedType]; exists {
 		return image
 	}
@@ -539,9 +638,45 @@ func getManagedServiceDataPath(managedType string) string {
 		"minio":      "/data",
 		"rabbitmq":   "/var/lib/rabbitmq",
 	}
-	
+
 	if path, exists := paths[managedType]; exists {
 		return path
 	}
 	return "/data"
+}
+
+// getManagedServiceCommand returns the command for container startup
+// Returns nil to use image default ENTRYPOINT for most services
+func getManagedServiceCommand(managedType string) []string {
+	switch managedType {
+	case "minio":
+		// MinIO needs explicit command
+		return []string{"minio"}
+	// Other services use image defaults:
+	// - postgres: uses default ENTRYPOINT ["docker-entrypoint.sh"]
+	// - mysql: uses default ENTRYPOINT ["docker-entrypoint.sh"]
+	// - redis: uses default ENTRYPOINT ["docker-entrypoint.sh"]
+	// - mongo: uses default ENTRYPOINT ["docker-entrypoint.sh"]
+	// - rabbitmq: uses default ENTRYPOINT ["/opt/rabbitmq/sbin/rabbitmq-server"]
+	default:
+		return nil // Use default image ENTRYPOINT
+	}
+}
+
+// getManagedServiceArgs returns the args for container startup
+// Returns nil to use image default CMD for most services
+func getManagedServiceArgs(managedType string) []string {
+	switch managedType {
+	case "minio":
+		// MinIO needs explicit server command with console
+		return []string{"server", "/data", "--console-address", ":9001"}
+	// Other services use image defaults:
+	// - postgres: uses default CMD ["postgres"]
+	// - mysql: uses default CMD ["mysqld"]
+	// - redis: uses default CMD ["redis-server"]
+	// - mongo: uses default CMD ["mongod"]
+	// - rabbitmq: uses default args (none needed)
+	default:
+		return nil // Use default image CMD
+	}
 }
