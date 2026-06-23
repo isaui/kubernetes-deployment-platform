@@ -24,13 +24,6 @@ spec:
           envFrom:
             - secretRef:
                 name: kubesa-backend-env
-        - name: kubectl-proxy
-          image: bitnami/kubectl:latest
-          imagePullPolicy: IfNotPresent
-          args:
-            - proxy
-            - --address=127.0.0.1
-            - --port=8001
 ---
 apiVersion: v1
 kind: Service
