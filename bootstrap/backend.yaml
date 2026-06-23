@@ -59,6 +59,7 @@ metadata:
     traefik.ingress.kubernetes.io/router.tls: "true"
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
+  # Keep this host in sync with BACKEND_URL in secrets.yml, without the scheme.
   tls:
     - hosts:
         - "api.app.example.com"
