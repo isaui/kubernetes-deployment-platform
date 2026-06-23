@@ -36,17 +36,17 @@ spec:
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
-                  name: kubesa-backend-env
+                  name: kubesa-postgres-env
                   key: POSTGRES_DB
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: kubesa-backend-env
+                  name: kubesa-postgres-env
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: kubesa-backend-env
+                  name: kubesa-postgres-env
                   key: POSTGRES_PASSWORD
           volumeMounts:
             - name: data
