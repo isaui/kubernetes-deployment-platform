@@ -38,8 +38,9 @@ kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
 ```
 
-The backend uses Kubernetes in-cluster ServiceAccount credentials. Local
-development can still set `K8S_PROXY_URL` to point at a local API proxy.
+The backend talks to Kubernetes through a `kubectl proxy` sidecar on
+`127.0.0.1:8001`. The proxy is loopback-only inside the pod and does not use a
+wildcard `accept-hosts` rule.
 
 After the UI is reachable, create Kubesa service records for the backend and
 frontend in Kubesa itself. From that point forward, the GitHub workflows can
