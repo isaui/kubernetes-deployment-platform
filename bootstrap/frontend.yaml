@@ -21,7 +21,7 @@ spec:
             - containerPort: 3000
               name: http
           envFrom:
-            - configMapRef:
+            - secretRef:
                 name: kubesa-frontend-env
 ---
 apiVersion: v1

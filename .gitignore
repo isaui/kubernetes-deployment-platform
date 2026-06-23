@@ -12,7 +12,6 @@
 .env.test
 .env.production
 bootstrap/secrets.yml
-bootstrap/config.yml
 
 # Database files
 *.db

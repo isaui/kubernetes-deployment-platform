@@ -24,8 +24,6 @@ spec:
           envFrom:
             - secretRef:
                 name: kubesa-backend-env
-            - configMapRef:
-                name: kubesa-backend-env
         - name: kubectl-proxy
           image: bitnami/kubectl:latest
           imagePullPolicy: IfNotPresent
