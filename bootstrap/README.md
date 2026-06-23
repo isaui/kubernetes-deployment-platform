@@ -7,6 +7,7 @@ before Kubesa can deploy itself.
 
 - `namespace.yaml`: namespace, service account, and bootstrap RBAC.
 - `secrets.example.yml`: copy this to `secrets.yml`, fill real secrets, then apply it.
+- `database.yaml`: bootstrap Postgres storage, deployment, and service.
 - `backend.yaml`: backend config, deployment, service, and ingress.
 - `frontend.yaml`: frontend config, deployment, service, and ingress.
 
@@ -32,6 +33,7 @@ cp bootstrap/secrets.example.yml bootstrap/secrets.yml
 
 kubectl apply -f bootstrap/namespace.yaml
 kubectl apply -f bootstrap/secrets.yml
+kubectl apply -f bootstrap/database.yaml
 kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
 ```
