@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+const (
+	// KanikoVersion is the pinned Kaniko executor version used across build jobs
+	// and the registry dependency mirror. Bump it here only.
+	KanikoVersion = "v1.23.2"
+	// KanikoExecutorImage is the upstream Kaniko executor image reference.
+	KanikoExecutorImage = "gcr.io/kaniko-project/executor:" + KanikoVersion
+)
+
 // createKanikoBuildJob creates a job definition using Kaniko with auto Dockerfile fixing
 func createKanikoBuildJob(registryURL string, deployment models.Deployment, service models.Service, image string) (*batchv1.Job, error) {
 	jobName := GetJobName(service.ID, deployment.ID)
@@ -122,7 +130,7 @@ func createKanikoBuildJob(registryURL string, deployment models.Deployment, serv
 					Containers: []corev1.Container{
 						{
 							Name:  "kaniko-executor",
-							Image: "gcr.io/kaniko-project/executor:v1.23.2",
+							Image: KanikoExecutorImage,
 							Args: append(append([]string{
 								"--context=/workspace",
 								"--dockerfile=/workspace/Dockerfile",

@@ -57,15 +57,9 @@ func (s *RegistryDependencyService) GetRequiredImages() []DependencyImage {
 		},
 		{
 			Name:        "kaniko-executor",
-			SourceImage: "gcr.io/kaniko-project/executor:v1.23.2",
-			TargetTag:   "kaniko-executor:v1.23.2",
+			SourceImage: utils.KanikoExecutorImage,
+			TargetTag:   "kaniko-executor:" + utils.KanikoVersion,
 			Description: "Daemonless container image builder",
-		},
-		{
-			Name:        "nixpacks-ready",
-			SourceImage: "nixos/nix:2.18.1",
-			TargetTag:   "nixpacks-ready:v1.0.0",
-			Description: "Custom image with nixpacks CLI pre-installed",
 		},
 	}
 }
@@ -217,14 +211,6 @@ WORKDIR /workspace`, img.SourceImage)
 # Kaniko executor ready for use
 WORKDIR /workspace`, img.SourceImage)
 
-	case "nixpacks-ready":
-		// Custom build with nixpacks
-		dockerfileContent = fmt.Sprintf(`FROM %s
-RUN nix-env -iA nixpkgs.nixpacks
-RUN nix-collect-garbage -d
-RUN nixpacks --version
-WORKDIR /workspace`, img.SourceImage)
-
 	default:
 		return nil, fmt.Errorf("unknown image: %s", img.Name)
 	}
@@ -288,7 +274,7 @@ WORKDIR /workspace`, img.SourceImage)
 					Containers: []corev1.Container{
 						{
 							Name:  "kaniko-builder",
-							Image: "gcr.io/kaniko-project/executor:v1.23.2",
+							Image: utils.KanikoExecutorImage,
 							Args: append([]string{
 								"--context=/workspace",
 								"--dockerfile=/workspace/Dockerfile",
