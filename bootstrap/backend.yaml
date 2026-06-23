@@ -35,7 +35,7 @@ spec:
       serviceAccountName: kubesa
       containers:
         - name: backend
-          image: "ghcr.io/your-org/kubesa-backend:latest"
+          image: "kubesa-backend:bootstrap"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

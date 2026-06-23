@@ -12,6 +12,20 @@ before Kubesa can deploy itself.
 
 ## Install
 
+Build the bootstrap images on the k3s node and import them into k3s containerd:
+
+```sh
+# backend repo
+docker build -t kubesa-backend:bootstrap .
+docker save kubesa-backend:bootstrap | sudo k3s ctr images import -
+
+# frontend repo
+docker build -t kubesa-frontend:bootstrap .
+docker save kubesa-frontend:bootstrap | sudo k3s ctr images import -
+```
+
+Then apply the manifests:
+
 ```sh
 cp bootstrap/secrets.example.yml bootstrap/secrets.yml
 # edit bootstrap/secrets.yml, bootstrap/backend.yaml, and bootstrap/frontend.yaml
