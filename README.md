@@ -94,10 +94,6 @@ kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
 ```
 
-After the UI is reachable, create Kubesa service records for the backend and
-frontend in Kubesa itself. From that point forward deployments are managed
-through the Kubesa API.
-
 ## Local development
 
 In-cluster, the backend uses its `kubesa` ServiceAccount automatically (no
