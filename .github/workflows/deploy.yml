@@ -1,8 +1,7 @@
 name: Deploy to Kubesa
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -32,7 +31,7 @@ jobs:
               "serviceId": "'"${KUBESA_SERVICE_ID}"'",
               "apiKey": "'"${KUBESA_API_KEY}"'",
               "commitId": "${{ github.sha }}",
-              "commitMessage": "${{ github.event.head_commit.message }}"
+              "commitMessage": "${{ github.event.head_commit.message || format('Manual deploy of {0}', github.sha) }}"
             }'
           
           echo "Deployment initiated. Check deployment status and logs in the Kubesa web interface."
