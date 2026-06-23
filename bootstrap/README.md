@@ -1,46 +1,25 @@
 # Kubesa Bootstrap
 
-This directory is the first-install path for Kubesa. Use it before Kubesa is
-able to deploy itself.
+This directory contains plain Kubernetes manifests for the first Kubesa install,
+before Kubesa can deploy itself.
 
-## Required environment
+## Files
 
-```sh
-export BACKEND_IMAGE=ghcr.io/your-org/kubesa-backend:latest
-export FRONTEND_IMAGE=ghcr.io/your-org/kubesa-frontend:latest
-export DATABASE_URL='postgresql://user:password@host:5432/db?sslmode=disable'
-export JWT_SECRET='change-me'
-export DEFAULT_DOMAIN=app.example.com
-export DEFAULT_ADMIN_EMAIL=admin@example.com
-export DEFAULT_ADMIN_PASSWORD='change-me'
-export BACKEND_HOST=api.app.example.com
-export FRONTEND_HOST=kubesa.app.example.com
-export CORS_ALLOWED=https://kubesa.app.example.com
-export LOAD_BALANCER_IP=1.2.3.4
-export SERVER_IP=1.2.3.4
-```
-
-Optional:
-
-```sh
-export DEFAULT_ADMIN_USERNAME=admin
-export DEFAULT_ADMIN_NAME='Default Admin'
-export TCP_PROXY_HOST=proxy.app.example.com
-export TCP_PROXY_PORT_START=24000
-export TCP_PROXY_PORT_END=24999
-```
+- `namespace.yaml`: namespace, service account, and bootstrap RBAC.
+- `secrets.example.yml`: copy this to `secrets.yml`, fill real secrets, then apply it.
+- `backend.yaml`: backend config, deployment, service, and ingress.
+- `frontend.yaml`: frontend config, deployment, service, and ingress.
 
 ## Install
 
 ```sh
-./bootstrap/render-bootstrap.sh > /tmp/kubesa-bootstrap.yaml
-kubectl apply -f /tmp/kubesa-bootstrap.yaml
-```
+cp bootstrap/secrets.example.yml bootstrap/secrets.yml
+# edit bootstrap/secrets.yml, bootstrap/backend.yaml, and bootstrap/frontend.yaml
 
-PowerShell:
-
-```powershell
-.\bootstrap\render-bootstrap.ps1 | kubectl apply -f -
+kubectl apply -f bootstrap/namespace.yaml
+kubectl apply -f bootstrap/secrets.yml
+kubectl apply -f bootstrap/backend.yaml
+kubectl apply -f bootstrap/frontend.yaml
 ```
 
 The backend pod runs a `kubectl proxy` sidecar because the current backend
