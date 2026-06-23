@@ -227,6 +227,41 @@ func createKanikoBuildJob(registryURL string, deployment models.Deployment, serv
 	}
 
 	SecurePodSpec(&job.Spec.Template.Spec)
+
+	// Kaniko builds arbitrary user Dockerfiles as root: it unpacks the base
+	// image rootfs and runs RUN steps (apt, useradd, mknod, chroot, ...).
+	// Dropping ALL caps breaks it (e.g. "chown ...: operation not permitted"),
+	// so grant the same capability set a normal `docker build` runs with — the
+	// Docker default set. The genuinely dangerous caps (SYS_ADMIN, NET_ADMIN,
+	// SYS_PTRACE, SYS_TIME, ...) stay dropped.
+	for i := range job.Spec.Template.Spec.Containers {
+		if job.Spec.Template.Spec.Containers[i].Name == "kaniko-executor" {
+			job.Spec.Template.Spec.Containers[i].SecurityContext = &corev1.SecurityContext{
+				RunAsUser:                int64Ptr(0),
+				AllowPrivilegeEscalation: boolPtr(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+					Add: []corev1.Capability{
+						"CHOWN",            // chown files while unpacking rootfs (the original error)
+						"DAC_OVERRIDE",     // read/write/exec regardless of permission bits
+						"FOWNER",           // chmod/utime on files not owned by the process
+						"FSETID",           // preserve setuid/setgid bits
+						"SETUID",           // package managers creating users (apt, useradd)
+						"SETGID",           // ... and groups
+						"SETFCAP",          // set file capabilities (e.g. setcap on binaries)
+						"SETPCAP",          // drop/raise caps in the process tree
+						"MKNOD",            // create device nodes (some installers/base images)
+						"SYS_CHROOT",       // chroot during build steps
+						"KILL",             // signal processes spawned by RUN steps
+						"NET_BIND_SERVICE", // bind low ports if a RUN step starts a service
+						"NET_RAW",          // raw sockets (ping in healthcheck-style RUN steps)
+						"AUDIT_WRITE",      // write audit log (login/useradd touch it)
+					},
+				},
+			}
+		}
+	}
+
 	log.Println("Kaniko job spec created successfully with Dockerfile auto-fixing")
 	return job, nil
 }
