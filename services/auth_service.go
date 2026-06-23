@@ -2,7 +2,9 @@ package services
 
 import (
 	"errors"
+	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -10,10 +12,72 @@ import (
 	"github.com/pendeploy-simple/dto"
 	"github.com/pendeploy-simple/models"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // This file uses dto.TokenClaims, dto.LoginRequest, dto.RegisterRequest, and dto.AuthResponse
 // which are defined in the dto/auth.go file
+
+// EnsureAdminExists creates or promotes the default admin user when configured.
+func EnsureAdminExists() error {
+	email := strings.TrimSpace(os.Getenv("DEFAULT_ADMIN_EMAIL"))
+	password := os.Getenv("DEFAULT_ADMIN_PASSWORD")
+
+	if email == "" && password == "" {
+		log.Println("Default admin bootstrap skipped: DEFAULT_ADMIN_EMAIL and DEFAULT_ADMIN_PASSWORD are not set")
+		return nil
+	}
+
+	if email == "" || password == "" {
+		return errors.New("DEFAULT_ADMIN_EMAIL and DEFAULT_ADMIN_PASSWORD must both be set")
+	}
+
+	var user models.User
+	result := database.DB.Where("email = ?", email).First(&user)
+	if result.Error == nil {
+		if user.Role != models.RoleAdmin {
+			if err := database.DB.Model(&user).Update("role", models.RoleAdmin).Error; err != nil {
+				return err
+			}
+			log.Printf("Default admin user promoted: %s", email)
+		}
+		return nil
+	}
+
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return result.Error
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	username := optionalEnvString("DEFAULT_ADMIN_USERNAME")
+	name := optionalEnvString("DEFAULT_ADMIN_NAME")
+	admin := models.User{
+		Email:    email,
+		Password: string(hashedPassword),
+		Username: username,
+		Name:     name,
+		Role:     models.RoleAdmin,
+	}
+
+	if err := database.DB.Create(&admin).Error; err != nil {
+		return err
+	}
+
+	log.Printf("Default admin user created: %s", email)
+	return nil
+}
+
+func optionalEnvString(key string) *string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	return &value
+}
 
 // Register creates a new user account
 func Register(req dto.RegisterRequest) (*models.User, error) {
@@ -23,7 +87,7 @@ func Register(req dto.RegisterRequest) (*models.User, error) {
 	if result.RowsAffected > 0 {
 		return nil, errors.New("email already registered")
 	}
-	
+
 	// Check if username exists if provided
 	if req.Username != nil && *req.Username != "" {
 		result = database.DB.Where("username = ?", req.Username).First(&existingUser)
@@ -91,8 +155,8 @@ func Login(req dto.LoginRequest) (*dto.AuthResponse, error) {
 	responseUser.Password = ""
 
 	return &dto.AuthResponse{
-		Token:    token,
-		User:     responseUser,
+		Token:     token,
+		User:      responseUser,
 		ExpiresAt: expiresAt,
 	}, nil
 }

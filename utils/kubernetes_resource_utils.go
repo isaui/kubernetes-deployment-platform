@@ -23,26 +23,27 @@ func GetResourceName(service models.Service) string {
 func getMainContainerName() string {
 	return "app"
 }
+
 // SanitizeLabel makes a string valid for use as a Kubernetes label value
 // by replacing invalid characters with '-' and ensuring it meets label requirements
 func SanitizeLabel(value string) string {
 	// Convert to lowercase first
 	value = strings.ToLower(value)
-	
+
 	// Replace spaces and other invalid characters with dashes
 	reg := regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
 	sanitized := reg.ReplaceAllString(value, "-")
-	
+
 	// Ensure it starts with an alphanumeric character
 	if len(sanitized) > 0 && !regexp.MustCompile(`^[a-zA-Z0-9]`).MatchString(sanitized) {
 		sanitized = "x" + sanitized
 	}
-	
+
 	// Ensure it ends with an alphanumeric character
 	if len(sanitized) > 0 && !regexp.MustCompile(`[a-zA-Z0-9]$`).MatchString(sanitized) {
 		sanitized = sanitized + "x"
 	}
-	
+
 	// Truncate if it's too long (63 is the Kubernetes limit for label values)
 	if len(sanitized) > 63 {
 		sanitized = sanitized[:63]
@@ -51,7 +52,7 @@ func SanitizeLabel(value string) string {
 			sanitized = sanitized[:62] + "x"
 		}
 	}
-	
+
 	return sanitized
 }
 
@@ -59,27 +60,28 @@ func SanitizeLabel(value string) string {
 func GetDefaultDomainName(service models.Service) string {
 	// Extract repo name from Git URL
 	repoName := extractRepoNameFromURL(service.RepoURL)
-	
+
 	// Create sanitized parts for the domain name
 	sanitizedRepoName := SanitizeLabel(repoName)
 	sanitizedBranch := SanitizeLabel(service.Branch)
-	
+
 	// Default to 'main' if branch is empty
 	if sanitizedBranch == "" {
 		sanitizedBranch = "main"
 	}
-	
+
 	// Truncate environmentID to 6 characters to keep hostnames shorter
 	shortEnvID := service.EnvironmentID
 	if len(shortEnvID) > 6 {
 		shortEnvID = shortEnvID[:6]
 	}
-	
-	// Format: repo-name-branch.env-id.app.isacitra.com
-	return fmt.Sprintf("%s-%s.%s.app.isacitra.com", 
-		sanitizedRepoName, 
-		sanitizedBranch, 
-		shortEnvID)
+
+	// Format: repo-name-branch.env-id.default-domain
+	return fmt.Sprintf("%s-%s.%s.%s",
+		sanitizedRepoName,
+		sanitizedBranch,
+		shortEnvID,
+		GetDefaultDomain())
 }
 
 // extractRepoNameFromURL extracts the repository name from a git URL
@@ -88,10 +90,10 @@ func extractRepoNameFromURL(repoURL string) string {
 	if repoURL == "" {
 		return "app"
 	}
-	
+
 	// Remove trailing .git if present
 	repoURL = strings.TrimSuffix(repoURL, ".git")
-	
+
 	// Extract repo name from different URL formats
 	// Case 1: https://github.com/username/repo
 	if strings.Contains(repoURL, "github.com") || strings.Contains(repoURL, "gitlab.com") {
@@ -100,7 +102,7 @@ func extractRepoNameFromURL(repoURL string) string {
 			return parts[len(parts)-1] // Get last part after slash
 		}
 	}
-	
+
 	// Case 2: git@github.com:username/repo
 	if strings.Contains(repoURL, "@") && strings.Contains(repoURL, ":") {
 		parts := strings.Split(repoURL, ":")
@@ -110,7 +112,7 @@ func extractRepoNameFromURL(repoURL string) string {
 			return repoPathParts[len(repoPathParts)-1] // Get last part
 		}
 	}
-	
+
 	// Default case: just use the whole URL as a basis and sanitize it
 	parts := strings.Split(repoURL, "/")
 	return parts[len(parts)-1]
@@ -119,13 +121,14 @@ func extractRepoNameFromURL(repoURL string) string {
 // GetResourceLabels generates consistent labels for resources
 func GetResourceLabels(service models.Service) map[string]string {
 	return map[string]string{
-		"app":         GetResourceName(service), // Use immutable resource name
-		"service-id":  service.ID,
+		"app":          GetResourceName(service), // Use immutable resource name
+		"service-id":   service.ID,
 		"service-name": SanitizeLabel(service.Name), // Sanitize name for Kubernetes label compliance
-		"environment": service.EnvironmentID,
-		"managed-by":  "pendeploy",
+		"environment":  service.EnvironmentID,
+		"managed-by":   "pendeploy",
 	}
 }
+
 // GetKubernetesResourceStatus gets the status of all resources for a service via Kubernetes API
 func GetKubernetesResourceStatus(service models.Service) (map[string]interface{}, error) {
 	// Create Kubernetes client
@@ -133,7 +136,7 @@ func GetKubernetesResourceStatus(service models.Service) (map[string]interface{}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
 	}
-    log.Println("Kubernetes client created successfully")
+	log.Println("Kubernetes client created successfully")
 	ctx := context.Background()
 	resourceName := GetResourceName(service) // This is just service.ID
 	status := make(map[string]interface{})
@@ -149,7 +152,7 @@ func GetKubernetesResourceStatus(service models.Service) (map[string]interface{}
 			"conditions":        deployment.Status.Conditions,
 		}
 	}
-    log.Println("Deployment status retrieved successfully")
+	log.Println("Deployment status retrieved successfully")
 	// Get Service status
 	svc, err := k8sClient.Clientset.CoreV1().Services(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
 	if err == nil {
@@ -167,19 +170,17 @@ func GetKubernetesResourceStatus(service models.Service) (map[string]interface{}
 			"name":  ingress.Name,
 			"hosts": ingress.Spec.Rules,
 		}
-	}	
-    log.Println("Ingress status retrieved successfully")
+	}
+	log.Println("Ingress status retrieved successfully")
 	// Get HPA status if exists
 	hpa, err := k8sClient.Clientset.AutoscalingV2().HorizontalPodAutoscalers(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
 	if err == nil {
 		status["hpa"] = map[string]interface{}{
-			"name":           hpa.Name,
+			"name":            hpa.Name,
 			"currentReplicas": hpa.Status.CurrentReplicas,
 			"desiredReplicas": hpa.Status.DesiredReplicas,
 		}
 	}
-    log.Println("HPA status retrieved successfully")
+	log.Println("HPA status retrieved successfully")
 	return status, nil
 }
-
-

@@ -20,28 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// getOrAllocateNodePort gets existing NodePort from service or allocates new one
-func getOrAllocateNodePort(ctx context.Context, client *kubernetes.Client, service models.Service, serverIP string) (int, error) {
-	resourceName := GetResourceName(service)
-
-	// Try to get existing service to reuse NodePort
-	existingService, err := client.Clientset.CoreV1().Services(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
-	if err == nil {
-		// Service exists, check if it has NodePort
-		for _, port := range existingService.Spec.Ports {
-			if port.NodePort != 0 {
-				log.Printf("Reusing existing NodePort %d for service %s", port.NodePort, service.Name)
-				return int(port.NodePort), nil
-			}
-		}
-	}
-
-	// Service doesn't exist or doesn't have NodePort, allocate new one
-	return AllocateNodePort(service.ManagedType, serverIP)
-}
-
-// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes with NodePort for TCP services
-func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (*models.Service, error) {
+// DeployManagedServiceToKubernetes deploys a managed service to Kubernetes.
+func DeployManagedServiceToKubernetes(service models.Service) (*models.Service, error) {
 	service.Status = "building"
 
 	k8sClient, err := kubernetes.NewClient()
@@ -57,16 +37,9 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 		return &service, fmt.Errorf("failed to ensure namespace: %v", err)
 	}
 
-	// Check if service already exists to reuse NodePort
-	nodePort, err := getOrAllocateNodePort(ctx, k8sClient, service, serverIP)
-	if err != nil {
-		service.Status = "failed"
-		return &service, fmt.Errorf("failed to allocate NodePort: %v", err)
-	}
-
-	// Set port and env vars using enhanced utils with NodePort
+	// Set port and env vars using the shared TCP proxy.
 	service.Port = GetManagedServicePort(service.ManagedType)
-	service.EnvVars = GenerateManagedServiceEnvVars(service, serverIP, nodePort)
+	service.EnvVars = GenerateManagedServiceEnvVars(service, service.ExternalHost, service.ExternalPort)
 
 	var deploymentErrors []string
 
@@ -87,16 +60,15 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 		}
 	}
 
-	// Check if services already exist - if yes, skip service/ingress deployment
-	// This prevents NodePort conflicts during StatefulSet resource updates
+	// Check if services already exist - if yes, skip service/ingress deployment.
 	resourceName := GetResourceName(service)
 	_, serviceErr := k8sClient.Clientset.CoreV1().Services(service.EnvironmentID).Get(ctx, resourceName, metav1.GetOptions{})
 	if serviceErr != nil && errors.IsNotFound(serviceErr) {
 		// Services don't exist, deploy them
 		log.Printf("Deploying new services and ingresses for %s", service.Name)
 
-		// Deploy all services (NodePort for TCP, ClusterIP for HTTP)
-		if err := deployAllManagedServices(ctx, k8sClient, service, nodePort); err != nil {
+		// Deploy all internal services. TCP exposure is handled by the shared HAProxy gateway.
+		if err := deployAllManagedServices(ctx, k8sClient, service); err != nil {
 			deploymentErrors = append(deploymentErrors, fmt.Sprintf("services: %v", err))
 		}
 
@@ -113,31 +85,22 @@ func DeployManagedServiceToKubernetes(service models.Service, serverIP string) (
 		return &service, fmt.Errorf("deployment failed: %s", strings.Join(deploymentErrors, "; "))
 	}
 
-	// Set external connection info
-	service.Domain = fmt.Sprintf("%s:%d", serverIP, nodePort) // For primary TCP service
 	service.Status = "running"
 
-	log.Printf("Successfully deployed managed service: %s (%s) with NodePort %d", service.Name, service.ManagedType, nodePort)
+	log.Printf("Successfully deployed managed service: %s (%s) with TCP proxy %s:%d", service.Name, service.ManagedType, service.ExternalHost, service.ExternalPort)
 	return &service, nil
 }
 
 // deployAllManagedServices creates all required services with appropriate exposure
-func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service, primaryNodePort int) error {
+func deployAllManagedServices(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	serviceConfigs := GetManagedServiceExposureConfig(service.ManagedType)
 
 	for _, config := range serviceConfigs {
 		var k8sService *corev1.Service
 
-		if config.ExposureType == "NodePort" && config.Name == "primary" {
-			// Primary TCP service gets allocated NodePort
-			k8sService = createNodePortServiceSpec(service, config, primaryNodePort)
-		} else if config.ExposureType == "NodePort" {
-			// Secondary TCP services would need separate port allocation (future)
-			k8sService = createClusterIPServiceSpec(service, config)
-		} else {
-			// HTTP services get ClusterIP for internal access (exposed via Ingress)
-			k8sService = createClusterIPServiceSpec(service, config)
-		}
+		// All managed service ports stay private as ClusterIP. External TCP access is
+		// routed through the shared tcp-proxy service.
+		k8sService = createClusterIPServiceSpec(service, config)
 
 		if err := applyManagedService(ctx, client, k8sService); err != nil {
 			return fmt.Errorf("service %s: %v", config.Name, err)
@@ -161,39 +124,6 @@ func deployManagedIngresses(ctx context.Context, client *kubernetes.Client, serv
 		}
 	}
 	return nil
-}
-
-// createNodePortServiceSpec creates NodePort Service for TCP services
-func createNodePortServiceSpec(service models.Service, config ServiceExposureConfig, nodePort int) *corev1.Service {
-	resourceName := GetResourceName(service)
-	labels := GetResourceLabels(service)
-	serviceName := resourceName
-
-	// Add suffix for secondary services
-	if config.Name != "primary" {
-		serviceName = fmt.Sprintf("%s-%s", resourceName, config.Name)
-	}
-
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: service.EnvironmentID,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     corev1.ServiceTypeNodePort,
-			Selector: map[string]string{"app": resourceName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:       int32(config.Port),
-					TargetPort: intstr.FromInt(config.Port),
-					Protocol:   corev1.ProtocolTCP,
-					Name:       config.Name,
-					NodePort:   int32(nodePort),
-				},
-			},
-		},
-	}
 }
 
 // createClusterIPServiceSpec creates ClusterIP Service for internal/HTTP services
@@ -263,11 +193,11 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "managed-service",
+							Name:    "managed-service",
 							Image:   containerImage,
-						Command: getManagedServiceCommand(service.ManagedType),
-						Args:    getManagedServiceArgs(service.ManagedType),
-							Ports: containerPorts,
+							Command: getManagedServiceCommand(service.ManagedType),
+							Args:    getManagedServiceArgs(service.ManagedType),
+							Ports:   containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(service.CPULimit),
@@ -356,11 +286,11 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "managed-service",
+							Name:    "managed-service",
 							Image:   containerImage,
-						Command: getManagedServiceCommand(service.ManagedType),
-						Args:    getManagedServiceArgs(service.ManagedType),
-							Ports: containerPorts,
+							Command: getManagedServiceCommand(service.ManagedType),
+							Args:    getManagedServiceArgs(service.ManagedType),
+							Ports:   containerPorts,
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse(service.CPULimit),
@@ -599,7 +529,7 @@ func updateStatefulSetWithScaling(ctx context.Context, client *kubernetes.Client
 	// Update template spec with new resource limits
 	existingStatefulSet.Spec.Template = newStatefulSet.Spec.Template
 	existingStatefulSet.Spec.VolumeClaimTemplates = newStatefulSet.Spec.VolumeClaimTemplates
-	
+
 	// Scale back up to 1
 	oneReplica := int32(1)
 	existingStatefulSet.Spec.Replicas = &oneReplica

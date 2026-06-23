@@ -11,6 +11,7 @@ import (
 	"github.com/pendeploy-simple/api/v1"
 	"github.com/pendeploy-simple/database"
 	"github.com/pendeploy-simple/middleware"
+	"github.com/pendeploy-simple/services"
 )
 
 func main() {
@@ -19,12 +20,21 @@ func main() {
 
 	// Set Gin mode
 	gin.SetMode(gin.ReleaseMode)
-	
+
 	// Initialize router
 	router := gin.Default()
 
 	// Initialize database connection
 	database.Initialize()
+	if err := services.EnsureAdminExists(); err != nil {
+		log.Fatalf("Failed to ensure default admin user exists: %v", err)
+	}
+	if err := services.NewRegistryService().EnsureRegistryExists(); err != nil {
+		log.Fatalf("Failed to ensure default registry exists: %v", err)
+	}
+	if err := services.NewManagedServiceService().EnsureTCPProxyExists(); err != nil {
+		log.Fatalf("Failed to ensure TCP proxy exists: %v", err)
+	}
 
 	// CORS configuration
 	corsAllowed := os.Getenv("CORS_ALLOWED")
@@ -50,7 +60,7 @@ func main() {
 			"version": "1.0.0",
 		})
 	})
-	
+
 	// Setup API v1 routes
 	apiV1 := router.Group("/api/v1")
 	// Apply middleware to the group - it has built-in exceptions for auth routes
@@ -67,7 +77,7 @@ func main() {
 	// Start server
 	log.Printf("🚀 PenDeploy API v1 starting on port %s", port)
 	log.Printf("📚 API docs available at: http://localhost:%s/api/v1/health", port)
-	
+
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

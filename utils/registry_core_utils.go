@@ -7,8 +7,11 @@ import (
 	"github.com/pendeploy-simple/models"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	kubernetes "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 )
@@ -19,20 +22,21 @@ func CreateRegistryService(ctx context.Context, registryNamespace string, regist
 			Name:      GetRegistryResourceName(registry.ID),
 			Namespace: registryNamespace,
 			Labels: map[string]string{
-				"app":        "registry",
+				"app":         "registry",
 				"registry-id": registry.ID,
 			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				"app":        "registry",
+				"app":         "registry",
 				"registry-id": registry.ID,
 			},
 			Ports: []corev1.ServicePort{
 				{
 					Port:       5000,
-					TargetPort: IntToQuantity(5000),
+					TargetPort: intstr.FromInt(5000),
 					Protocol:   corev1.ProtocolTCP,
+					Name:       "registry",
 				},
 			},
 			Type: corev1.ServiceTypeClusterIP,
@@ -40,19 +44,22 @@ func CreateRegistryService(ctx context.Context, registryNamespace string, regist
 	}
 
 	_, err := clientset.CoreV1().Services(registryNamespace).Create(ctx, service, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = clientset.CoreV1().Services(registryNamespace).Update(ctx, service, metav1.UpdateOptions{})
+	}
 	return err
 }
 
 func CreateRegistryDeployment(ctx context.Context, registryNamespace string, registry models.Registry, clientset *kubernetes.Clientset) error {
 	var replicas int32 = 1
 	resourceName := GetRegistryResourceName(registry.ID)
-	
+
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName,
 			Namespace: registryNamespace,
 			Labels: map[string]string{
-				"app":        "registry",
+				"app":         "registry",
 				"registry-id": registry.ID,
 			},
 		},
@@ -60,14 +67,14 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app":        "registry",
+					"app":         "registry",
 					"registry-id": registry.ID,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app":        "registry",
+						"app":         "registry",
 						"registry-id": registry.ID,
 					},
 				},
@@ -112,7 +119,7 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 									},
 								},
 								InitialDelaySeconds: 10,
-								PeriodSeconds:      30,
+								PeriodSeconds:       30,
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
@@ -123,7 +130,7 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 									},
 								},
 								InitialDelaySeconds: 5,
-								PeriodSeconds:      10,
+								PeriodSeconds:       10,
 							},
 						},
 					},
@@ -143,6 +150,68 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 	}
 
 	_, err := clientset.AppsV1().Deployments(registryNamespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = clientset.AppsV1().Deployments(registryNamespace).Update(ctx, deployment, metav1.UpdateOptions{})
+	}
+	return err
+}
+
+func CreateRegistryIngress(ctx context.Context, registryNamespace string, registry models.Registry, clientset *kubernetes.Clientset) error {
+	resourceName := GetRegistryResourceName(registry.ID)
+	hostname := GetRegistryHostname(registry.ID)
+	pathTypePrefix := networkingv1.PathTypePrefix
+
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName,
+			Namespace: registryNamespace,
+			Labels: map[string]string{
+				"app":         "registry",
+				"registry-id": registry.ID,
+			},
+			Annotations: map[string]string{
+				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+				"traefik.ingress.kubernetes.io/router.tls":         "true",
+				"cert-manager.io/cluster-issuer":                   "letsencrypt-prod",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: hostname,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathTypePrefix,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: resourceName,
+											Port: networkingv1.ServiceBackendPort{
+												Number: 5000,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			TLS: []networkingv1.IngressTLS{
+				{
+					Hosts:      []string{hostname},
+					SecretName: fmt.Sprintf("%s-tls", resourceName),
+				},
+			},
+		},
+	}
+
+	_, err := clientset.NetworkingV1().Ingresses(registryNamespace).Create(ctx, ingress, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = clientset.NetworkingV1().Ingresses(registryNamespace).Update(ctx, ingress, metav1.UpdateOptions{})
+	}
 	return err
 }
 
@@ -150,28 +219,31 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 func CreatePVC(ctx context.Context, registry models.Registry, registryNamespace string, clientset *kubernetes.Clientset) error {
 	// Log the PVC creation
 	fmt.Printf("Creating PVC with name %s in namespace %s\n", GetRegistryResourceName(registry.ID), registryNamespace)
-	
+
 	// Create the PVC directly with the standard structure
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      GetRegistryResourceName(registry.ID),
 			Namespace: registryNamespace,
 			Labels: map[string]string{
-				"app":        "registry",
+				"app":         "registry",
 				"registry-id": registry.ID,
 			},
 		},
 	}
-	
+
 	// Add access mode
 	accessModes := []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 	pvc.Spec.AccessModes = accessModes
-	
+
 	// Add storage request - 5Gi
 	pvc.Spec.Resources.Requests = make(corev1.ResourceList)
 	pvc.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("20Gi")
-	
+
 	_, err := clientset.CoreV1().PersistentVolumeClaims(registryNamespace).Create(ctx, pvc, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
 	return err
 }
 
@@ -186,7 +258,7 @@ func UpdateDeployment(ctx context.Context, registry models.Registry, clientset *
 		// Update any deployment spec fields that need to be changed
 		// This could include resource limits, etc.
 		// For now, let's just update the annotations to trigger a rolling update
-		
+
 		if deployment.Spec.Template.Annotations == nil {
 			deployment.Spec.Template.Annotations = make(map[string]string)
 		}
