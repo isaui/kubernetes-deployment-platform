@@ -7,6 +7,10 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      KUBESA_API_URL: ${{ secrets.KUBESA_API_URL }}
+      KUBESA_SERVICE_ID: ${{ secrets.KUBESA_SERVICE_ID }}
+      KUBESA_API_KEY: ${{ secrets.KUBESA_API_KEY }}
     
     steps:
       - name: Checkout code
@@ -14,12 +18,19 @@ jobs:
       
       - name: Deploy to Kubesa
         run: |
-          echo "Triggering deployment..."          
-          curl -X POST https://kubernetes-deployment-platform-main.52bda5.app.isacitra.com/api/v1/deployments/git \
+          echo "Triggering deployment..."
+
+          : "${KUBESA_API_URL:?KUBESA_API_URL secret is required}"
+          : "${KUBESA_SERVICE_ID:?KUBESA_SERVICE_ID secret is required}"
+          : "${KUBESA_API_KEY:?KUBESA_API_KEY secret is required}"
+
+          KUBESA_API_URL="${KUBESA_API_URL%/}"
+
+          curl -X POST "${KUBESA_API_URL}/api/v1/deployments/git" \
             -H "Content-Type: application/json" \
             -d '{
-              "serviceId": "d921128b-3e73-49ae-9425-9d4a8cdfbb37",
-              "apiKey": "${{ secrets.KUBESA_API_KEY }}",
+              "serviceId": "'"${KUBESA_SERVICE_ID}"'",
+              "apiKey": "'"${KUBESA_API_KEY}"'",
               "commitId": "${{ github.sha }}",
               "commitMessage": "${{ github.event.head_commit.message }}"
             }'
