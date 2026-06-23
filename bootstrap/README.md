@@ -41,12 +41,6 @@ kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
 ```
 
-Ingress hosts cannot read values from Secret or ConfigMap. Keep these values in
-sync manually:
-
-- `BACKEND_URL` in `secrets.yml` and the backend ingress host in `backend.yaml`
-- `FRONTEND_URL` in `secrets.yml` and the frontend ingress host in `frontend.yaml`
-
 The backend pod runs a `kubectl proxy` sidecar because the current backend
 Kubernetes client reads `K8S_PROXY_URL`. The sidecar uses the `kubesa`
 ServiceAccount bound to `cluster-admin` for bootstrap simplicity.
