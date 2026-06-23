@@ -7,9 +7,10 @@ before Kubesa can deploy itself.
 
 - `namespace.yaml`: namespace, service account, and bootstrap RBAC.
 - `secrets.example.yml`: copy this to `secrets.yml`, fill real secrets, then apply it.
+- `config.example.yml`: copy this to `config.yml`, fill non-secret config, then apply it.
 - `database.yaml`: bootstrap Postgres storage, deployment, and service.
-- `backend.yaml`: backend config, deployment, service, and ingress.
-- `frontend.yaml`: frontend config, deployment, service, and ingress.
+- `backend.yaml`: backend deployment, service, and ingress.
+- `frontend.yaml`: frontend deployment, service, and ingress.
 
 ## Install
 
@@ -29,10 +30,12 @@ Then apply the manifests:
 
 ```sh
 cp bootstrap/secrets.example.yml bootstrap/secrets.yml
-# edit bootstrap/secrets.yml, bootstrap/backend.yaml, and bootstrap/frontend.yaml
+cp bootstrap/config.example.yml bootstrap/config.yml
+# edit bootstrap/secrets.yml, bootstrap/config.yml, bootstrap/backend.yaml, and bootstrap/frontend.yaml
 
 kubectl apply -f bootstrap/namespace.yaml
 kubectl apply -f bootstrap/secrets.yml
+kubectl apply -f bootstrap/config.yml
 kubectl apply -f bootstrap/database.yaml
 kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
