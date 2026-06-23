@@ -149,6 +149,8 @@ func CreateRegistryDeployment(ctx context.Context, registryNamespace string, reg
 		},
 	}
 
+	SecurePodSpec(&deployment.Spec.Template.Spec)
+
 	_, err := clientset.AppsV1().Deployments(registryNamespace).Create(ctx, deployment, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		_, err = clientset.AppsV1().Deployments(registryNamespace).Update(ctx, deployment, metav1.UpdateOptions{})

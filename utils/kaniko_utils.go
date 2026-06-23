@@ -186,6 +186,8 @@ func createKanikoBuildJob(registryURL string, deployment models.Deployment, serv
 			},
 		},
 	}
+
+	SecurePodSpec(&job.Spec.Template.Spec)
 	log.Println("Kaniko job spec created successfully with Dockerfile auto-fixing")
 	return job, nil
 }

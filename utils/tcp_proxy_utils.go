@@ -138,7 +138,7 @@ defaults
 
 func createTCPProxyDeployment(cfg TCPProxyConfig) *appsv1.Deployment {
 	replicas := int32(1)
-	return &appsv1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cfg.Name,
 			Namespace: cfg.Namespace,
@@ -185,6 +185,9 @@ func createTCPProxyDeployment(cfg TCPProxyConfig) *appsv1.Deployment {
 			},
 		},
 	}
+
+	SecurePodSpec(&deployment.Spec.Template.Spec)
+	return deployment
 }
 
 func createTCPProxyService(cfg TCPProxyConfig, services []models.Service) *corev1.Service {

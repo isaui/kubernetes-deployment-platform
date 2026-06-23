@@ -243,6 +243,7 @@ func createStatefulSetSpec(service models.Service) *appsv1.StatefulSet {
 		}
 	}
 
+	SecurePodSpec(&statefulSet.Spec.Template.Spec)
 	return statefulSet
 }
 
@@ -330,6 +331,7 @@ func createManagedDeploymentSpec(service models.Service) *appsv1.Deployment {
 		}
 	}
 
+	SecurePodSpec(&deployment.Spec.Template.Spec)
 	return deployment
 }
 

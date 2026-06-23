@@ -148,6 +148,7 @@ func (s *RegistryDependencyService) waitForRegistryReady(ctx context.Context, re
 					},
 				},
 			}
+			utils.SecurePodSpec(&testPod.Spec)
 
 			// Create test pod
 			_, err := s.kubeClient.Clientset.CoreV1().Pods("build-and-deploy").Create(ctx, testPod, metav1.CreateOptions{})
@@ -231,7 +232,7 @@ WORKDIR /workspace`, img.SourceImage)
 	// Clean registry URL for kaniko
 	cleanRegistryURL := utils.CleanRegistryURL(registry.URL)
 
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
 			Namespace: "build-and-deploy",
@@ -334,7 +335,10 @@ WORKDIR /workspace`, img.SourceImage)
 				},
 			},
 		},
-	}, nil
+	}
+
+	utils.SecurePodSpec(&job.Spec.Template.Spec)
+	return job, nil
 }
 
 // ValidateDependencies checks if all required images are available in the registry

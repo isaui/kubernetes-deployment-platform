@@ -25,7 +25,7 @@ import (
 func DeployToKubernetesAtomically(imageURL string, service models.Service) (*models.Service, error) {
 	// Update service status to building
 	service.Status = "building"
-	
+
 	k8sClient, err := kubernetes.NewClient()
 	if err != nil {
 		service.Status = "failed"
@@ -33,7 +33,7 @@ func DeployToKubernetesAtomically(imageURL string, service models.Service) (*mod
 	}
 
 	ctx := context.Background()
-	
+
 	if err := EnsureNamespaceExists(service.EnvironmentID); err != nil {
 		service.Status = "failed"
 		return &service, fmt.Errorf("failed to ensure namespace: %v", err)
@@ -72,7 +72,7 @@ func DeployToKubernetesAtomically(imageURL string, service models.Service) (*mod
 
 	service.Status = "running"
 	service.UpdatedAt = time.Now()
-	
+
 	log.Printf("Successfully deployed service: %s", GetResourceName(service))
 	return &service, nil
 }
@@ -96,7 +96,7 @@ func deployIngress(ctx context.Context, client *kubernetes.Client, service model
 
 func handleHPA(ctx context.Context, client *kubernetes.Client, service models.Service) error {
 	resourceName := GetResourceName(service)
-	
+
 	if service.IsStaticReplica {
 		return deleteHPA(ctx, client, service.EnvironmentID, resourceName)
 	}
@@ -158,13 +158,13 @@ func deleteHPA(ctx context.Context, client *kubernetes.Client, namespace, resour
 func createDeploymentSpec(imageURL string, service models.Service) *appsv1.Deployment {
 	resourceName := GetResourceName(service)
 	labels := GetResourceLabels(service)
-	
+
 	replicas := int32(service.Replicas)
 	if !service.IsStaticReplica {
 		replicas = int32(service.MinReplicas)
 	}
 
-	return &appsv1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName,
 			Namespace: service.EnvironmentID,
@@ -172,7 +172,7 @@ func createDeploymentSpec(imageURL string, service models.Service) *appsv1.Deplo
 		},
 		Spec: appsv1.DeploymentSpec{
 			RevisionHistoryLimit: int32Ptr(1),
-			Replicas:            &replicas,
+			Replicas:             &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"app": resourceName,
@@ -210,6 +210,9 @@ func createDeploymentSpec(imageURL string, service models.Service) *appsv1.Deplo
 			},
 		},
 	}
+
+	SecurePodSpec(&deployment.Spec.Template.Spec)
+	return deployment
 }
 
 func createServiceSpec(service models.Service) *corev1.Service {
@@ -244,11 +247,11 @@ func createIngressSpec(service models.Service) *networkingv1.Ingress {
 	labels := GetResourceLabels(service)
 	hostnames := buildHostnames(service)
 	pathTypePrefix := networkingv1.PathTypePrefix
-	
+
 	// Generate TLS secret name based on service
 	// Option 1: Standard approach (recommended)
 	tlsSecretName := fmt.Sprintf("%s-tls", resourceName)
-	
+
 	// Option 2: Replace hyphens if you're paranoid (NOT needed)
 	// tlsSecretName := strings.ReplaceAll(resourceName, "-", "") + "tls"
 
@@ -260,11 +263,11 @@ func createIngressSpec(service models.Service) *networkingv1.Ingress {
 			Annotations: map[string]string{
 				// Traefik configuration
 				"traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-				"traefik.ingress.kubernetes.io/router.tls": "true",
-				
+				"traefik.ingress.kubernetes.io/router.tls":         "true",
+
 				// Cert-manager configuration
 				"cert-manager.io/cluster-issuer": "letsencrypt-prod",
-				
+
 				// Optional: HTTP to HTTPS redirect (Traefik handles this automatically for websecure)
 				// "traefik.ingress.kubernetes.io/redirect-permanent": "true",
 				// "traefik.ingress.kubernetes.io/redirect-scheme": "https",
@@ -349,7 +352,7 @@ func createHPASpec(service models.Service) *autoscalingv2.HorizontalPodAutoscale
 
 func buildHostnames(service models.Service) []string {
 	var hostnames []string
-	
+
 	if service.CustomDomain != "" {
 		hostnames = append(hostnames, service.CustomDomain)
 	}
@@ -359,6 +362,6 @@ func buildHostnames(service models.Service) []string {
 	if len(hostnames) == 0 {
 		hostnames = append(hostnames, GetDefaultDomainName(service))
 	}
-	
+
 	return hostnames
 }
