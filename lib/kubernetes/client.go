@@ -10,9 +10,9 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
-// ProxyOptions contains options for connecting to kubectl proxy
+// ProxyOptions contains options for connecting through a local Kubernetes API proxy.
 type ProxyOptions struct {
-	// Host is the kubectl proxy URL (default: http://localhost:8001)
+	// Host is the proxy URL.
 	Host string
 }
 
@@ -23,50 +23,53 @@ type Client struct {
 	DynamicClient dynamic.Interface
 }
 
-// NewClient creates a new Kubernetes client using the proxy address from env or default
+// NewClient creates a Kubernetes client.
+// If K8S_PROXY_URL is set, it is used for local development. Otherwise the
+// client uses in-cluster ServiceAccount credentials.
 func NewClient() (*Client, error) {
-	// Read from environment or use default
 	proxyURL := os.Getenv("K8S_PROXY_URL")
-	if proxyURL == "" {
-		proxyURL = "http://localhost:8001"
+	if proxyURL != "" {
+		return NewClientWithOptions(ProxyOptions{Host: proxyURL})
 	}
-	
-	return NewClientWithOptions(ProxyOptions{
-		Host: proxyURL,
-	})
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-cluster Kubernetes config: %v", err)
+	}
+
+	return NewClientWithConfig(config)
 }
 
-// NewClientWithOptions creates a new Kubernetes client with the specified proxy options
+// NewClientWithOptions creates a new Kubernetes client with the specified proxy options.
 func NewClientWithOptions(options ProxyOptions) (*Client, error) {
-	// Set default proxy host if not provided
 	host := options.Host
 	if host == "" {
-		host = "http://localhost:8001"
+		return nil, fmt.Errorf("proxy host is required")
 	}
 
-	// Create a simple REST config pointing to the kubectl proxy
 	config := &rest.Config{
 		Host: host,
-		// No authentication needed when using kubectl proxy
 		TLSClientConfig: rest.TLSClientConfig{
 			Insecure: true,
 		},
 	}
 
-	// Create clientset
+	return NewClientWithConfig(config)
+}
+
+// NewClientWithConfig creates Kubernetes clients from a rest.Config.
+func NewClientWithConfig(config *rest.Config) (*Client, error) {
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %v", err)
 	}
 
-	// Create metrics client
 	metricsClient, err := metricsv1beta1.NewForConfig(config)
 	if err != nil {
 		// If metrics client fails, we'll continue without it
 		fmt.Printf("Warning: Unable to create metrics client: %v\n", err)
 	}
 
-	// Create dynamic client for custom resources
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		// If dynamic client fails, return error as it's needed for custom resources
@@ -80,26 +83,31 @@ func NewClientWithOptions(options ProxyOptions) (*Client, error) {
 	}, nil
 }
 
-// GetConfig returns a REST config for the proxy address from env or default
+// GetConfig returns a Kubernetes REST config.
+// If K8S_PROXY_URL is set, it is used for local development. Otherwise the
+// config uses in-cluster ServiceAccount credentials.
 func GetConfig() (*rest.Config, error) {
-	// Read from environment or use default
 	proxyURL := os.Getenv("K8S_PROXY_URL")
-	if proxyURL == "" {
-		proxyURL = "http://localhost:8001"
+	if proxyURL != "" {
+		return GetConfigWithHost(proxyURL)
 	}
-	
-	return GetConfigWithHost(proxyURL)
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create in-cluster Kubernetes config: %v", err)
+	}
+
+	return config, nil
 }
 
-// GetConfigWithHost returns a Kubernetes config using the specified kubectl proxy host
+// GetConfigWithHost returns a Kubernetes config using the specified API proxy host.
 func GetConfigWithHost(host string) (*rest.Config, error) {
 	if host == "" {
-		host = "http://localhost:8001"
+		return nil, fmt.Errorf("proxy host is required")
 	}
-	
+
 	return &rest.Config{
 		Host: host,
-		// No authentication needed when using kubectl proxy
 		TLSClientConfig: rest.TLSClientConfig{
 			Insecure: true,
 		},

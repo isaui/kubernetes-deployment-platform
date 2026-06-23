@@ -38,9 +38,8 @@ kubectl apply -f bootstrap/backend.yaml
 kubectl apply -f bootstrap/frontend.yaml
 ```
 
-The backend pod runs a `kubectl proxy` sidecar because the current backend
-Kubernetes client reads `K8S_PROXY_URL`. The sidecar uses the `kubesa`
-ServiceAccount bound to `cluster-admin` for bootstrap simplicity.
+The backend uses Kubernetes in-cluster ServiceAccount credentials. Local
+development can still set `K8S_PROXY_URL` to point at a local API proxy.
 
 After the UI is reachable, create Kubesa service records for the backend and
 frontend in Kubesa itself. From that point forward, the GitHub workflows can
