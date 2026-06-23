@@ -8,6 +8,7 @@ import (
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"log"
+	"net/url"
 	"strings"
 )
 
@@ -18,6 +19,38 @@ const (
 	// KanikoExecutorImage is the upstream Kaniko executor image reference.
 	KanikoExecutorImage = "gcr.io/kaniko-project/executor:" + KanikoVersion
 )
+
+// buildGitCloneURL returns the repository URL used by the git-clone step.
+// It appends ".git" and, for private services, injects HTTPS basic-auth
+// credentials (username + PAT). Public services clone over plain HTTPS.
+// The returned URL may contain the token, so never log it directly.
+func buildGitCloneURL(service models.Service) string {
+	repoURL := service.RepoURL
+	if !strings.HasSuffix(repoURL, ".git") {
+		repoURL = repoURL + ".git"
+	}
+
+	// No token => public repo; clone without credentials. IsPublic is only a
+	// UX/validation hint, so the build path keys off the token alone.
+	if service.GitToken == "" {
+		return repoURL
+	}
+
+	// PAT auth only works over HTTPS; validation rejects non-HTTPS URLs.
+	parsed, err := url.Parse(repoURL)
+	if err != nil || parsed.Scheme != "https" {
+		return repoURL
+	}
+
+	username := service.GitUsername
+	if username == "" {
+		// GitHub-friendly default; the token acts as the password so any
+		// non-empty username works for GitHub/GitLab/etc.
+		username = "x-access-token"
+	}
+	parsed.User = url.UserPassword(username, service.GitToken)
+	return parsed.String()
+}
 
 // createKanikoBuildJob creates a job definition using Kaniko with auto Dockerfile fixing
 func createKanikoBuildJob(registryURL string, deployment models.Deployment, service models.Service, image string) (*batchv1.Job, error) {
@@ -30,11 +63,9 @@ func createKanikoBuildJob(registryURL string, deployment models.Deployment, serv
 	}
 	log.Printf("Using branch: %s", branch)
 
-	repoURL := service.RepoURL
-	if !strings.HasSuffix(repoURL, ".git") {
-		repoURL = repoURL + ".git"
-	}
-	log.Printf("Repository URL: %s", repoURL)
+	// Authenticated URL for private repos; logged without credentials.
+	repoURL := buildGitCloneURL(service)
+	log.Printf("Repository URL: %s", service.RepoURL)
 
 	sharedVolumeName := "build-workspace"
 	log.Println("Preparing Kaniko job configuration with Dockerfile auto-fixing")

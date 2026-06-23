@@ -13,6 +13,9 @@ type ServiceRequest struct {
 	// Git-specific fields (required only when Type is "git")
 	RepoURL       string             `json:"repoUrl"`
 	Branch        string             `json:"branch"`
+	IsPublic      bool               `json:"isPublic"`
+	GitUsername   string             `json:"gitUsername"` // optional; defaults per-provider on clone
+	GitToken      string             `json:"gitToken"`    // PAT, required for private repos
 	Port          int                `json:"port"`
 	BuildCommand  string             `json:"buildCommand"`
 	StartCommand  string             `json:"startCommand"`

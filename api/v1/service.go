@@ -3,6 +3,7 @@ package v1
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pendeploy-simple/dto"
@@ -238,6 +239,22 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 			})
 			return
 		}
+
+		// Only HTTPS URLs are supported (PAT authentication is HTTPS-only).
+		if !strings.HasPrefix(req.RepoURL, "https://") {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "Repository URL must be an HTTPS URL (e.g. https://github.com/owner/repo.git)",
+			})
+			return
+		}
+
+		// Private repositories require an access token.
+		if !req.IsPublic && req.GitToken == "" {
+			ctx.JSON(http.StatusBadRequest, gin.H{
+				"error": "A personal access token is required for private repositories",
+			})
+			return
+		}
 	} else if req.Type == models.ServiceTypeManaged {
 		// Managed services require ManagedType and validation
 		if req.ManagedType == "" {
@@ -264,9 +281,9 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 		}
 		
 		// Managed services don't need git-specific fields
-		if req.RepoURL != "" || req.Branch != "" || req.BuildCommand != "" || req.StartCommand != "" {
+		if req.RepoURL != "" || req.Branch != "" || req.BuildCommand != "" || req.StartCommand != "" || req.GitUsername != "" || req.GitToken != "" {
 			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "Git-specific fields (repoUrl, branch, buildCommand, startCommand) are not allowed for managed services",
+				"error": "Git-specific fields (repoUrl, branch, buildCommand, startCommand, gitUsername, gitToken) are not allowed for managed services",
 			})
 			return
 		}
@@ -295,6 +312,9 @@ func (c *ServiceController) CreateService(ctx *gin.Context) {
 		// Git-specific fields
 		RepoURL:        req.RepoURL,
 		Branch:         req.Branch,
+		IsPublic:       req.IsPublic,
+		GitUsername:    req.GitUsername,
+		GitToken:       req.GitToken,
 		Port:           req.Port,
 		BuildCommand:   req.BuildCommand,
 		StartCommand:   req.StartCommand,

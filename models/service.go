@@ -47,8 +47,13 @@ type Service struct {
 	ProjectID string      `json:"projectId" gorm:"type:uuid;not null;index"`
 
 	// Git repository (only applicable for ServiceTypeGit)
-	RepoURL string `json:"repoUrl" gorm:"default:null"`
-	Branch  string `json:"branch" gorm:"default:main"`
+	RepoURL  string `json:"repoUrl" gorm:"default:null"`
+	Branch   string `json:"branch" gorm:"default:main"`
+	IsPublic bool   `json:"isPublic"` // false => private repo, needs GitToken (no gorm default: a literal false must persist)
+	// Credentials for private repositories (HTTPS + PAT). GitToken is never
+	// returned in API responses.
+	GitUsername string `json:"gitUsername" gorm:"default:null"`
+	GitToken    string `json:"-" gorm:"default:null"`
 
 	// Managed services specific fields (only applicable for ServiceTypeManaged)
 	ManagedType string `json:"managedType" gorm:"default:null"` // postgresql, redis, minio, etc.
